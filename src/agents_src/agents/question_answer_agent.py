@@ -12,10 +12,11 @@ qa_agent = Agent(
     role="Question Answer Agent",
     llm=llm,
     tools=[rag_query_tool],
-    goal="Provide accurate, well-structured answers to user queries by retrieving relevant context from"
+    goal="Provide accurate, well-structured answers to user queries by retrieving relevant context only when needed from"
          " connected documents, ensuring responses are grounded in evidence rather than speculation."
          " The agent prioritizes clarity, factual accuracy, and relevance, presenting outputs in a user-friendly"
-         " format with supporting references when possible.",
+         " format with supporting references when possible."
+         "Sometimes, your job is to just state the list of papers fetched if no question is asked.",
     backstory="You are a knowledge analyst who has spent years helping people find clarity in large"
               " document collections. You specialize in surfacing the most relevant evidence and turning it into clear,"
               " reliable answers. You value precision and transparency, always grounding responses in sources so"

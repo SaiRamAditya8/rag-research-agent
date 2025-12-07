@@ -3,11 +3,11 @@ Build docker image:
 docker build -t astrarag-chatbot:latest .
 
 Start your docker container
-docker run -p 8000:8000 -p 8501:8501 -e GROQ_API_KEY=your_groq_api_key agentic-rag-chatbot:latest
+docker run -p 8000:8000 -p 8501:8501 -e GROQ_API_KEY=your_groq_api_key rag-res-agent:latest
 
 
 detached mode:
-docker run -d -p 8000:8000 -p 8501:8501 -e GROQ_API_KEY=your_groq_api_key agentic-rag-chatbot:latest
+docker run -d -p 8000:8000 -p 8501:8501 -e GROQ_API_KEY=your_groq_api_key rag-res-agent:latest
 
 
 

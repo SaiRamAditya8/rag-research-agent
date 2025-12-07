@@ -1,4 +1,4 @@
-# agentic-rag-chatbot
+# rag-research-chatbot
 
 # Workflow:
 
@@ -20,3 +20,10 @@ This parses the total chat history into user_query and chat_history for the agen
 ## frontend_src
 
 This contains the code for a simple streamlit interface that shows the chat history and user query. It uses the FastAPI endpoint mentioned in the .env to post the request with the whole chat_history and gets the output to show.
+
+
+Goal: 
+
+user: "Explain the attention mechanism in the paper Attention is all you need"
+Bot fetches the paper, ingests it
+answers the user.
