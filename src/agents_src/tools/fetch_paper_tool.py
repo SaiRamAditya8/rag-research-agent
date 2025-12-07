@@ -146,6 +146,15 @@ def build_vector_store_from_documents(pdf_paths: Optional[List[str]] = None) -> 
         )
 
         logger.info("Vector store built successfully.")
+
+        for pdf_path in pdf_paths:
+            try:
+                if os.path.exists(pdf_path):
+                    os.remove(pdf_path)
+                    logger.info(f"Deleted temporary PDF: {pdf_path}")
+            except Exception as e:
+                logger.warning(f"Could not delete PDF file {pdf_path}: {e}")
+
         return 0
 
     except Exception as e:

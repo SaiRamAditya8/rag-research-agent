@@ -31,7 +31,7 @@ qa_task = Task(
     Use "papers" as metadata if it is not None or empty to append to your answer that these documents have been fetched.
     
     Instructions:
-    - If fetch is true and papers list is not empty, acknowledge that these papers have been fetched in your answer first.
+    - If fetch is true and papers list is not empty, acknowledge that len(papers) papers have been fetched in your answer first.
     - Then retrieve relevant context from the document store using the RAG retriever tool only if use_rag is true and user_query contains a question.
     - Use the chat history if use_rag is true to provide context in your answer.
     - If use_rag is false, just respond by specifying the list of papers fetched in natural tone.
