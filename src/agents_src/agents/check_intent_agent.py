@@ -12,16 +12,9 @@ intent_agent = Agent(
     role="Check Intent Agent",
     llm=llm,
     tools=[fetch_paper_tool],
-    goal="Analyze the latest user query (with chat history) and fetch the paper if needed:"
-            "Decide whether to fetch a new paper based on the user's intent."
-            "Decide if RAG should be used for answering."
-            "If the user wants to fetch a paper, decide what the standardized fetch/query parameters are and fetch and create vector embeddings the paper."
-            "Separate the question part from the user query if the user is asking a question.",
-    backstory="You are a highly precise intent classification specialist."
-                "Your only job is to read the user’s latest query and latest chat history and determine:"
-                "Does the user want new papers fetched?"
-                "Does the user want any question answered?"
-                "If yes, you will fetch and create vector embeddings for the paper using the fetch paper tool."
-                "You do not answer questions. But separate out the question part from the user query if the user is asking a question.",
+    goal="Analyze the latest user query and decide if papers need to be fetched. If yes, use the fetch_paper_tool to fetch and ingest them.",
+    backstory="You are a precise intent classification specialist. Your job is to determine if the user wants new research papers fetched. "
+                "If they do, analyze their query to extract search terms and categories, then use the fetch_paper_tool to fetch and ingest the papers. "
+                "Do not answer questions yourself - only fetch papers if requested.",
     verbose=True,
 )

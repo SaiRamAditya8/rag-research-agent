@@ -30,41 +30,6 @@ logger = logging.getLogger(__name__)
 # Load settings from environment variables
 settings = DocIngestionSettings()
 
-# def build_vector_store_from_documents():
-#     logger.info("Starting vector store ingestion process.")
-#     try:
-#         docs_dir_path = settings.DOCUMENTS_DIR
-#         vector_store_path = settings.VECTOR_STORE_DIR
-#         collection_name = settings.COLLECTION_NAME
-#         logger.info(f"Loading documents from directory: {docs_dir_path}")
-#         loader = SimpleDirectoryReader(input_dir=docs_dir_path)
-#         documents = loader.load_data()
-#         # Create parser with chunking strategy
-#         parser = SimpleNodeParser.from_defaults(chunk_size=1024, chunk_overlap=50)
-#         logger.info("Parsing documents into nodes.")
-#         nodes = parser.get_nodes_from_documents(documents)
-#         logger.info(f"Parsed {len(nodes)} nodes.")
-#         logger.info(f"Initializing ChromaDB persistent client at: {vector_store_path}")
-#         db = chromadb.PersistentClient(path=vector_store_path)
-#         # Create or retrieve the vector collection
-#         chroma_collection = db.get_or_create_collection(name=collection_name)
-#         logger.info(f"Creating Chroma vector store with collection name: {collection_name}")
-#         vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-#         # Create storage context
-#         storage_context = StorageContext.from_defaults(vector_store=vector_store)
-#         logger.info("Building vector store index.")
-#         index = VectorStoreIndex(
-#             nodes,
-#             storage_context=storage_context,
-#             vector_store=vector_store,
-#             embed_model=embed_model
-#         )
-#         logger.info("Vector store build successfully.")
-#         return 0
-#     except Exception as e:
-#         logger.error(f"Error during vector store build: {e}")
-#         return 1
-
 def _extract_text_from_pdf(path: str) -> str:
     """Extract text from a single PDF using PyMuPDF (fitz)."""
     text_chunks = []
@@ -113,10 +78,10 @@ def build_vector_store_from_documents(pdf_paths: Optional[List[str]] = None) -> 
             if not documents:
                 logger.error("No valid documents were created from provided PDF paths.")
                 return 1
-        # else:
-        #     logger.info(f"Loading documents from directory: {docs_dir_path}")
-        #     loader = SimpleDirectoryReader(input_dir=docs_dir_path)
-        #     documents = loader.load_data()
+        else:
+            logger.info(f"Loading documents from directory: {docs_dir_path}")
+            loader = SimpleDirectoryReader(input_dir=docs_dir_path)
+            documents = loader.load_data()
 
         # Create parser with chunking strategy
         parser = SimpleNodeParser.from_defaults(chunk_size=1024, chunk_overlap=50)
@@ -161,63 +126,89 @@ def build_vector_store_from_documents(pdf_paths: Optional[List[str]] = None) -> 
         logger.exception(f"Error during vector store build: {e}")
         return 1
 
-class IntentUse(BaseModel):
-    title: str  
-    category: str = "cs.AI"  # Default category
-
 @tool
-def fetch_paper_tool(intent: IntentUse) -> dict:
+def fetch_paper_tool(queries: List[str], categories: List[str] = None) -> dict:
     """
-    Fetches a paper by querying the arxiv API.
-    Creates Vector embeddings for the fetched paper and stores them in the vector store.
-    Returns the list of fetched papers with their titles and links.
+    Fetches academic papers using a multi-query search strategy.
 
     Args:
-        intent (IntentUse): The intent containing title and category of the paper to fetch. Eg: {"title": "Attention Is All You Need", "category": "cs.CL"}
+        queries: List of search query strings (1-5 items)
+        categories: Optional list of arXiv categories corresponding to queries
 
-    Returns:
-        list: A list of fetched papers with their titles and links.
+    This tool performs multiple arXiv searches, aggregates and deduplicates 
+    candidate papers, and ingests them into the vector store.
 
-    Notes:
-        - Requires proper title and category of the paper to query.
+    Key characteristics:
+    - Executes multiple arXiv queries (up to 5) per request
+    - Treats arXiv categories as optional filters
+    - Deduplicates papers across queries
+    - Ingests papers deterministically
+    - Deletes temporary PDF files after embedding
+
+    The tool returns only successfully ingested paper titles and URLs.
     """
-    # Handle both dict and IntentUse object inputs
-    if isinstance(intent, dict):
-        intent = IntentUse(**intent)
 
-    logger.info(f"Fetching papers with title: {intent.title} and category: {intent.category}")
+    all_results = []
+    candidates = []
+    seen_titles = set()
+    
+    # Default to single empty category if not provided
+    if categories is None:
+        categories = [""]
+    
+    # Search all combinations of queries and categories
+    for query_text in queries:
+        if not query_text or not query_text.strip():
+            continue
+        
+        for category in categories:
+            if category and category.strip():
+                query = f'all:"{query_text}" AND cat:{category}'
+                logger.info(f"Fetching papers with title: {query_text} and category: {category}")
+            else:
+                query = f'all:"{query_text}"'
+                logger.info(f"Fetching papers with title: {query_text} without specific category")
+        
 
-    # Exact title + category search (title-only)
-    query = f'ti:"{intent.title}" AND cat:{intent.category}'
+        search = arxiv.Search(
+            query=query,
+            max_results=3,
+            sort_by=arxiv.SortCriterion.Relevance,
+        )
 
-    search = arxiv.Search(
-        query=query,
-        max_results=3,
-        sort_by=arxiv.SortCriterion.Relevance,
-    )
+        for paper in search.results():
+            norm_title = paper.title.lower().strip()
+            if norm_title not in seen_titles:
+                seen_titles.add(norm_title)
+                all_results.append(paper)
+                candidates.append({
+                    "title": paper.title,
+                    "summary": paper.summary,
+                    "pdf_url": paper.pdf_url,
+                    "published": paper.published
+                })
 
-    results = list(search.results())
-    if not results:
+    if not all_results:
         return None  # no match
+    
     docs_dir_path = settings.DOCUMENTS_DIR
     Path(docs_dir_path).mkdir(exist_ok=True)
-    response=[]
-    for paper in results:
+    selected_papers = all_results
+    pdf_paths = []
+    response = []
+    for paper in selected_papers:
         logger.info(f"Downloading: {paper.title}")
-        paper.download_pdf(dirpath=docs_dir_path, filename=f"{paper.title}.pdf")
-        response.append(paper.title)
-    log_response = {
-        "status": "success",
-        "fetched_papers": response
-    } 
-    logger.info(f"Fetch response: {log_response}")
-    build_vector_store_from_documents(pdf_paths=[os.path.join(docs_dir_path, f"{paper.title}.pdf") for paper in results])
+        safe_title = paper.title.replace("/", "_")[:100]
+        paper.download_pdf(dirpath=docs_dir_path, filename=f"{safe_title}.pdf")
+        pdf_paths.append(os.path.join(docs_dir_path, f"{safe_title}.pdf"))
+        response.append({"title": paper.title, "url": paper.pdf_url})
+    logger.info(f"Fetch response: {response}")
+    build_vector_store_from_documents(pdf_paths=pdf_paths)
     return response
 
-
-
 if __name__ == "__main__":
-    intent = IntentUse(title="Local Interpretable Model Agnostic Shap Explanations for machine learning models", category="cs.LG")
-    result = fetch_paper_tool(intent)
+    queries = ["Attention is all you need", "Self-attention mechanisms"]
+    categories = ["cs.LG", "cs.CL"]
+    result = fetch_paper_tool(queries, categories)
 
     print(result)

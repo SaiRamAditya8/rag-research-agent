@@ -1,6 +1,6 @@
 Build docker image:
 
-docker build -t astrarag-chatbot:latest .
+docker build -t res-agent-chatbot:latest .
 
 Start your docker container
 docker run -p 8000:8000 -p 8501:8501 -e GROQ_API_KEY=your_groq_api_key rag-res-agent:latest

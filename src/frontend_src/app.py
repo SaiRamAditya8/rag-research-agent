@@ -10,11 +10,11 @@ from src.frontend_src.config.frontend_settings import Settings
 settings = Settings()
 
 st.set_page_config(
-    page_title="AstraRAG",
+    page_title="Research Assistant Chatbot",
     page_icon="🤖",
     layout="centered",
 )
-st.title("💬 AstraRAG - Agentic RAG Chatbot")
+st.title("Research Assistant Chatbot 🤖")
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []

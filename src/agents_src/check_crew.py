@@ -3,7 +3,7 @@ from pprint import pprint
 from src.agents_src.crew import qa_crew
 
 input_data = {
-    "user_query": "Can you fetch Local Interpretable Model Agnostic Shap Explanations for machine learning models",
+    "user_query": "Can you fetch papers on Explainable AI techniques for deep learning models and explain them?",
     "chat_history": {}
 }
 
