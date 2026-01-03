@@ -11,69 +11,61 @@ class ChatMessage(BaseModel):
 class IntentOutput(BaseModel):
     fetch: bool
     use_rag: bool
-    papers : List[dict]
-    user_query: str
-    chat_history: List[ChatMessage]
+    queries : List[str]
+    categories : List[str]
+    request : str
 
 intent_task = Task(
     agent=intent_agent,
     name="Check Intent Task",
     description="""
-    Analyze the user's intent and decide whether research papers need to be fetched and/or a question needs to be answered.
-    You must call the fetch_paper_tool EXACTLY ONCE if fetching is required.
+    Analyze the user's intent using the latest user message "{user_query}" and the prior conversation "{chat_history}".
+    Determine whether research papers need to be fetched and/or whether a question needs to be answered using RAG.
+    Do NOT call any tools. Only analyze and decide intent based on user input and history.
 
     Step 1: Normalize User Query Using Chat History
     - Read the full chat history to understand the conversational context.
     - Rewrite the latest user query into a fully self-contained, explicit question or topic.
-    - Resolve references such as:
-    - "it", "this", "that", "they"
-    - vague follow-ups like "Can you explain it?" or "What about its limitations?"
+    - Resolve references such as: "it", "this", "that", "they"
+    - Resolve vague follow-ups like "Can you explain it?" or "What about its limitations?"
     - Use chat history to infer the subject if the user query is ambiguous.
-    - Remove all fetch-related phrases such as:
-    - "fetch", "download", "get the paper", "find papers"
-    - The final user_query must contain ONLY the coherent question or topic.
+    - Remove all fetch-related phrases like: "fetch", "download", "get the paper", "find papers"
+    - The final request must contain ONLY the coherent question or topic.
     Examples:
     - "Can you explain it?" → "Explain the transformer attention mechanism"
     - "Fetch papers and explain SHAP" → "Explain SHAP explanations"
 
-    Step 2: Determine Intent
-    - Set fetch = true if user explicitly asks to fetch/download/find papers
-    - Set use_rag = true if the NORMALIZED user_query contains a coherent question that needs answering
-        (Even if fetch=true, if there's a question part, use_rag should be true)
+    Step 2: Determine Intent Flags (NO TOOL CALLS)
+    - Set fetch = true if user explicitly asks to fetch/download/find/search for papers
+    - Set use_rag = true if the NORMALIZED request contains a coherent question that needs answering
+    - Even if fetch=true, if there's a question part, use_rag should be true
     - Example: "Fetch papers on SHAP explanations and explain it"
         → fetch: true (fetch request present)
         → use_rag: true (question "explain SHAP" is present)
-        → user_query: "Explain SHAP explanations"
-    - user_query must contain ONLY the question part.
+        → request: "Explain SHAP explanations"
+    - request must contain ONLY the question part.
 
     Step 3: Create Diverse Query and Category Lists (only if fetch = true)
-    - Generate 1–5 short and diverse search queries (maximum 10 words each).
+    - If fetch = true, generate 1–5 short and diverse search queries (maximum 10 words each).
     - Queries should:
-    - Use synonyms and paraphrases
-    - Vary specificity (broad to specific)
-    - Avoid keyword repetition
-    - Aim for semantic diversity
+        - Use synonyms and paraphrases
+        - Vary specificity (broad to specific)
+        - Avoid keyword repetition
+        - Aim for semantic diversity
     - Generate a separate list of arXiv categories:
-    - Include a category only if reasonably confident
-    - Otherwise use null
-    - The fetch tool will internally try all (query × category) combinations.
+        - Include a category only if reasonably confident
+        - Otherwise use null
+    - If fetch = false, return empty lists for both queries and categories.
 
-    Step 4: Call Tool ONCE
-    - Call fetch_paper_tool exactly once.
-    - Do NOT retry or call it again.
-    - Take the tool response as-is and return it in the papers field.
-
-    Step 5: Return Result
+    Step 4: Return Result
     - fetch: true or false
     - use_rag: true or false
-    - papers: response returned directly by fetch_paper_tool
-    - user_query: normalized, question-only query
-    - chat_history: pass through unchanged
+    - queries: list of search queries (empty if fetch = false)
+    - categories: list of arXiv categories (empty if fetch = false)
+    - request: normalized, self-contained question
 
     IMPORTANT RULES:
     - Do NOT answer the user's question.
-    - Do NOT rank or filter papers.
-    - Do NOT modify the fetch tool response.
     - Always return valid JSON strictly matching the IntentOutput schema.
     """,
     expected_output="""
@@ -82,26 +74,17 @@ intent_task = Task(
     {
     "fetch": boolean,
     "use_rag": boolean,
-    "papers": [
-        {
-        "title": "paper title",
-        "url": "paper pdf or landing page url"
-        }
-    ],
-    "user_query": "normalized, self-contained question or topic",
-    "chat_history": [
-        {
-        "role": "user | assistant",
-        "content": "message text"
-        }
-    ]
+    "queries": ["query1", "query2", ...],
+    "categories": ["category1", "category2", ...],
+    "request": "normalized, self-contained question or topic"
     }
 
     Notes:
-    - If fetch is false, papers must be an empty list.
-    - user_query must NOT contain fetch-related phrases.
-    - user_query must be understandable without chat history.
-    - chat_history must be passed through exactly as received.
+    - If fetch is false, queries and categories must be empty lists.
+    - request must NOT contain fetch-related phrases.
+    - request must be understandable without chat history.
+    - queries are diverse search queries generated to capture different aspects of the topic.
+    - categories are arXiv categories that match the queries (can be null values if uncertain).
 
     """,
     output_pydantic=IntentOutput,
@@ -116,8 +99,11 @@ if __name__ == "__main__":
         verbose=True,
     )
 
+    user_query = "Hi there!"
+    # user_query = "Can you fetch the paper Local Interpretable Model Agnostic Shap Explanations for machine learning models"
+
     input_data = {
-        "user_query": "Can you fetch the paper Local Interpretable Model Agnostic Shap Explanations for machine learning models",
+        "user_query": user_query,
         "chat_history": []
     }
 

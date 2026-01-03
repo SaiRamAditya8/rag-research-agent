@@ -62,10 +62,35 @@ def rag_query_tool(query: str) -> dict:
     query_engine = index.as_query_engine(similarity_top_k=3)
     # Pass the query to the query engine
     response = query_engine.query(query)
-    source_file_names = {m.get("file_name") for m in getattr(response, "metadata", {}).values()}
+    
+    # Extract source file names from source_nodes
+    # source_nodes is a list of NodeWithScore objects that contain metadata about retrieved documents
+    source_file_names = []
+    
+    source_nodes = getattr(response, "source_nodes", [])
+    if source_nodes:
+        for node_with_score in source_nodes:
+            # Each node has a .node attribute containing the actual Node object
+            node = getattr(node_with_score, "node", node_with_score)
+            # Node metadata is in .metadata dict
+            metadata = getattr(node, "metadata", {})
+            if metadata and isinstance(metadata, dict):
+                file_name = metadata.get("file_name") or metadata.get("filename") or metadata.get("source")
+                if file_name:
+                    source_file_names.append(file_name)
+    
+    # Filter out duplicates while preserving order
+    seen = set()
+    unique_sources = []
+    for s in source_file_names:
+        if s and s not in seen:
+            seen.add(s)
+            unique_sources.append(s)
+    
+    logger.info(f"Extracted sources: {unique_sources}")
 
     return {"answer": response.response,
-            "source_files": list(source_file_names)}
+            "sources": unique_sources}
 
 
 # For direct testing, uncomment the code below and comment out @tool.

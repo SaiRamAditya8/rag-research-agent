@@ -126,8 +126,8 @@ def build_vector_store_from_documents(pdf_paths: Optional[List[str]] = None) -> 
         logger.exception(f"Error during vector store build: {e}")
         return 1
 
-@tool
-def fetch_paper_tool(queries: List[str], categories: List[str] = None) -> dict:
+# @tool
+def fetch_papers_and_ingest(queries: List[str], categories: List[str] = None) -> dict:
     """
     Fetches academic papers using a multi-query search strategy.
 
@@ -209,6 +209,6 @@ def fetch_paper_tool(queries: List[str], categories: List[str] = None) -> dict:
 if __name__ == "__main__":
     queries = ["Attention is all you need", "Self-attention mechanisms"]
     categories = ["cs.LG", "cs.CL"]
-    result = fetch_paper_tool(queries, categories)
+    result = fetch_papers_and_ingest(queries, categories)
 
     print(result)
