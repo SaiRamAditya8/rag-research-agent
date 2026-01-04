@@ -37,13 +37,16 @@ intent_task = Task(
 
     Step 2: Determine Intent Flags (NO TOOL CALLS)
     - Set fetch = true if user explicitly asks to fetch/download/find/search for papers
-    - Set use_rag = true if the NORMALIZED request contains a coherent question that needs answering
-    - Even if fetch=true, if there's a question part, use_rag should be true
+    - Set use_rag = true if the NORMALIZED request is a KNOWLEDGE-SEEKING question (not chitchat/greetings)
+    - Knowledge-seeking questions: "Explain X", "What is Y", "How does Z work", "Compare A and B"
+    - Chitchat/greetings (use_rag = false): "How are you?", "Hi", "Hello", "What's up?", "How are you doing?"
+    - Even if fetch=true, if there's a knowledge-seeking question part, use_rag should be true
     - Example: "Fetch papers on SHAP explanations and explain it"
         → fetch: true (fetch request present)
-        → use_rag: true (question "explain SHAP" is present)
+        → use_rag: true (knowledge-seeking question "explain SHAP" is present)
         → request: "Explain SHAP explanations"
-    - request must contain ONLY the question part.
+    - request must contain ONLY the knowledge-seeking question part.
+    - If request is only chitchat (greeting, how are you, small talk), set use_rag = false and request = original message
 
     Step 3: Create Diverse Query and Category Lists (only if fetch = true)
     - If fetch = true, generate 1–5 short and diverse search queries (maximum 10 words each).

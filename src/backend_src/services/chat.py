@@ -1,7 +1,6 @@
 import logging
 from src.agents_src.crew import qa_crew, intent_crew, chitchat_crew
-from src.agents_src.tools.fetch_paper_tool import fetch_papers_and_ingest
-
+from src.backend_src.utils.paper_fetcher import fetch_papers_and_ingest
 logger = logging.getLogger(__name__)
 
 

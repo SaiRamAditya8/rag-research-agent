@@ -1,11 +1,11 @@
 import logging
 
-from crewai.tools import tool
-from pydantic import BaseModel
 import chromadb
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, StorageContext
 from llama_index.core.node_parser import SimpleNodeParser
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+import numpy as np
+
 from llama_index.vector_stores.chroma import ChromaVectorStore
 import fitz  # PyMuPDF
 import os
@@ -126,26 +126,29 @@ def build_vector_store_from_documents(pdf_paths: Optional[List[str]] = None) -> 
         logger.exception(f"Error during vector store build: {e}")
         return 1
 
-# @tool
-def fetch_papers_and_ingest(queries: List[str], categories: List[str] = None) -> dict:
+
+def fetch_papers_and_ingest(queries: List[str], categories: List[str] = None, top_k: int = 3) -> dict:
     """
     Fetches academic papers using a multi-query search strategy.
 
     Args:
         queries: List of search query strings (1-5 items)
         categories: Optional list of arXiv categories corresponding to queries
+        top_k: Number of top papers to select based on relevance (default: 3)
 
-    This tool performs multiple arXiv searches, aggregates and deduplicates 
-    candidate papers, and ingests them into the vector store.
+    This function performs multiple arXiv searches, aggregates and deduplicates 
+    candidate papers, ranks them by embedding similarity, and ingests the top-k 
+    papers into the vector store.
 
     Key characteristics:
     - Executes multiple arXiv queries (up to 5) per request
     - Treats arXiv categories as optional filters
     - Deduplicates papers across queries
-    - Ingests papers deterministically
+    - Ranks papers by cosine similarity between query and paper (title + abstract)
+    - Downloads and ingests only top-k papers
     - Deletes temporary PDF files after embedding
 
-    The tool returns only successfully ingested paper titles and URLs.
+    The function returns only successfully ingested paper titles and URLs.
     """
 
     all_results = []
@@ -191,20 +194,45 @@ def fetch_papers_and_ingest(queries: List[str], categories: List[str] = None) ->
     if not all_results:
         return None  # no match
     
+    logger.info(f"Found {len(all_results)} papers.")
+    
     docs_dir_path = settings.DOCUMENTS_DIR
     Path(docs_dir_path).mkdir(exist_ok=True)
-    selected_papers = all_results
+    # Compute embeddings for ranking
+    embed_model = HuggingFaceEmbedding()
+    # Embed the user query (use first query for simplicity)
+    query_text = queries[0] if queries else ""
+    query_emb = embed_model.get_text_embedding(query_text)
+    query_emb = np.array(query_emb) / np.linalg.norm(query_emb)
+
+    # Prepare list with scores (cosine similarity only)
+    scored_candidates = []
+    for cand in candidates:
+        text = f"{cand['title']} {cand['summary']}"
+        emb = embed_model.get_text_embedding(text)
+        emb = np.array(emb) / np.linalg.norm(emb)
+        sim = float(np.dot(query_emb, emb))
+        scored_candidates.append((sim, cand))
+
+    # Sort by similarity descending and select top_k
+    top_k = min(top_k, len(scored_candidates))
+    top_candidates = [c for _, c in sorted(scored_candidates, key=lambda x: x[0], reverse=True)[:top_k]]
+    logger.info(f"Selected {len(top_candidates)} papers.")
     pdf_paths = []
     response = []
-    for paper in selected_papers:
-        logger.info(f"Downloading: {paper.title}")
-        safe_title = paper.title.replace("/", "_")[:100]
-        paper.download_pdf(dirpath=docs_dir_path, filename=f"{safe_title}.pdf")
-        pdf_paths.append(os.path.join(docs_dir_path, f"{safe_title}.pdf"))
-        response.append({"title": paper.title, "url": paper.pdf_url})
-    logger.info(f"Fetch response: {response}")
+    for cand in top_candidates:
+        # Find the original paper object to download PDF
+        paper_obj = next(p for p in all_results if p.title == cand["title"])
+        logger.info(f"Downloading (ranked): {paper_obj.title}")
+        safe_title = paper_obj.title.replace("/", "_")[:100]
+        paper_obj.download_pdf(dirpath=docs_dir_path, filename=f"{safe_title}.pdf")
+        pdf_path = os.path.join(docs_dir_path, f"{safe_title}.pdf")
+        pdf_paths.append(pdf_path)
+        response.append({"title": paper_obj.title, "url": paper_obj.pdf_url})
+    logger.info(f"Fetch response (ranked): {response}")
     build_vector_store_from_documents(pdf_paths=pdf_paths)
     return response
+
 
 if __name__ == "__main__":
     queries = ["Attention is all you need", "Self-attention mechanisms"]

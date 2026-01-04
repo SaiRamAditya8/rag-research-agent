@@ -32,7 +32,7 @@ qa_task = Task(
     - The original user message as: "{user_query}"
     - The normalized, self-contained question produced by the Intent Agent as `request`: "{request}"
     - The full chat history as: "{chat_history}"
-    - A boolean `fetch` indicating whether a fetch attempt was made and `papers` containing fetched paper titles (may be empty)
+    - A boolean `fetch` indicating whether a fetch attempt was made and `papers` containing fetched paper titles: "{papers}"
 
     Instructions:
     - ALWAYS call the `rag_query_tool` with the normalized `request` to retrieve supporting context.
@@ -41,7 +41,7 @@ qa_task = Task(
     - Synthesize a clear, accurate answer strictly grounded in retrieved evidence. Do NOT hallucinate.
 
     - If RAG retrieval returns no relevant results, clearly state: "The knowledge source does not contain the required information to answer this question." Do NOT fabricate answers.
-    - In the final response, if `fetch` is true include an acknowledgement of the fetch attempt and the number of fetched papers (from `papers`).
+    - In the final response, if `fetch` is true, you MUST explicitly state at the beginning: "I have fetched [N] papers related to your request."
     - Transparently include `tool_used` set to "RAG Retriever" and a short `rationale` about how the answer was generated.
 
     """,
