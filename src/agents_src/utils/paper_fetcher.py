@@ -3,7 +3,6 @@ import logging
 import chromadb
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, StorageContext
 from llama_index.core.node_parser import SimpleNodeParser
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 import numpy as np
 
 from llama_index.vector_stores.chroma import ChromaVectorStore
@@ -16,6 +15,9 @@ import arxiv
 from pathlib import Path
 
 from src.rag_doc_ingestion.config.doc_ingestion_settings import DocIngestionSettings
+
+# Import shared model singleton from agents_src.llm.models
+from src.agents_src.llm.models import embed_model
 
 
 # Set up logging configuration
@@ -89,10 +91,8 @@ def build_vector_store_from_documents(pdf_paths: Optional[List[str]] = None) -> 
         nodes = parser.get_nodes_from_documents(documents)
         logger.info(f"Parsed {len(nodes)} nodes.")
 
-        # download & load embedding model
-        logger.info("Loading HuggingFace embedding model...")
-        embed_model = HuggingFaceEmbedding()
-
+        # Using shared embed_model singleton
+        
         logger.info(f"Initializing ChromaDB persistent client at: {vector_store_path}")
         db = chromadb.PersistentClient(path=vector_store_path)
         chroma_collection = db.get_or_create_collection(name=collection_name)
@@ -198,8 +198,8 @@ def fetch_papers_and_ingest(queries: List[str], categories: List[str] = None, to
     
     docs_dir_path = settings.DOCUMENTS_DIR
     Path(docs_dir_path).mkdir(exist_ok=True)
-    # Compute embeddings for ranking
-    embed_model = HuggingFaceEmbedding()
+    
+    # Use shared embedding model
     # Embed the user query (use first query for simplicity)
     query_text = queries[0] if queries else ""
     query_emb = embed_model.get_text_embedding(query_text)

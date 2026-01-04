@@ -1,6 +1,6 @@
 import logging
 from src.agents_src.crew import qa_crew, intent_crew, chitchat_crew
-from src.backend_src.utils.paper_fetcher import fetch_papers_and_ingest
+from src.agents_src.utils.paper_fetcher import fetch_papers_and_ingest
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +57,7 @@ def get_answer(chat_history: list) -> dict:
 
 # Example usage
 # sample_chat_history = [
-#     {"role": "user", "content": "Can you fetch and explain the paper Attention is all you need"}]
+#     {"role": "user", "content": "Can you fetch and explain the paper on Causal Inference"}]
 # #     {"role": "assistant", "content": "Evolution is the scientific theory describing how all life forms on Earth change over successive generations through alterations in their genetic material, leading to the diversity of life seen today. This process involves changes in an organism's genetic makeup (genome), which result from processes like mutation and are influenced by natural selection, where individuals with advantageous traits for their environment leave more offspring."},
 # #     {"role": "user", "content": "Explain in detail"}
 # # ]
