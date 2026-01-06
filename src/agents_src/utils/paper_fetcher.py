@@ -165,36 +165,72 @@ def fetch_papers_and_ingest(queries: List[str], categories: List[str] = None, to
             continue
         
         for category in categories:
+            # Try exact phrase match first
+            queries_to_try = []
+            
+            # 1. Exact phrase query
             if category and category.strip():
-                query = f'all:"{query_text}" AND cat:{category}'
-                logger.info(f"Fetching papers with title: {query_text} and category: {category}")
+                exact_query = f'all:"{query_text}" AND cat:{category}'
+                logger.info(f"Fetching (Exact) with title: {query_text} and category: {category}")
             else:
-                query = f'all:"{query_text}"'
-                logger.info(f"Fetching papers with title: {query_text} without specific category")
-        
+                exact_query = f'all:"{query_text}"'
+                logger.info(f"Fetching (Exact) with title: {query_text} without specific category")
+            
+            queries_to_try.append(exact_query)
 
-        search = arxiv.Search(
-            query=query,
-            max_results=3,
-            sort_by=arxiv.SortCriterion.Relevance,
-        )
+            # 2. Fallback: Keyword match (broad search)
+            if category and category.strip():
+                fallback_query = f'all:{query_text} AND cat:{category}'
+            else:
+                fallback_query = f'all:{query_text}'
+            
+            queries_to_try.append(fallback_query)
+            
+            # We will iterate through strategies until we find results
+            found_for_this_query = False
+            
+            for q in queries_to_try:
+                if found_for_this_query:
+                    break
+                    
+                try:
+                    search = arxiv.Search(
+                        query=q,
+                        max_results=3,
+                        sort_by=arxiv.SortCriterion.Relevance,
+                    )
+                    
+                    results = list(search.results())
+                    if results:
+                        found_for_this_query = True
+                        if q != exact_query:
+                             logger.info(f"Fallback search succeeded with query: {q}")
+                        
+                        for paper in results:
+                            norm_title = paper.title.lower().strip()
+                            if norm_title not in seen_titles:
+                                seen_titles.add(norm_title)
+                                logger.info(f"Found paper: {paper.title}")
+                                all_results.append(paper)
+                                candidates.append({
+                                    "title": paper.title,
+                                    "summary": paper.summary,
+                                    "pdf_url": paper.pdf_url,
+                                    "published": paper.published
+                                })
+                    else:
+                        logger.info(f"No results for query: {q}. Trying fallback if available...")
+                except Exception as e:
+                    logger.warning(f"ArXiv search failed for query '{q}': {e}")
+                    continue # Try next fallback
 
-        for paper in search.results():
-            norm_title = paper.title.lower().strip()
-            if norm_title not in seen_titles:
-                seen_titles.add(norm_title)
-                all_results.append(paper)
-                candidates.append({
-                    "title": paper.title,
-                    "summary": paper.summary,
-                    "pdf_url": paper.pdf_url,
-                    "published": paper.published
-                })
+
 
     if not all_results:
         return None  # no match
     
     logger.info(f"Found {len(all_results)} papers.")
+    logger.info(f"Candidates: {candidates}")
     
     docs_dir_path = settings.DOCUMENTS_DIR
     Path(docs_dir_path).mkdir(exist_ok=True)

@@ -57,7 +57,7 @@ def get_answer(chat_history: list) -> dict:
 
 # Example usage
 # sample_chat_history = [
-#     {"role": "user", "content": "Can you fetch and explain the paper on Causal Inference"}]
+#     {"role": "user", "content": "Can you fetch and explain the paper on {Local Interpretable Model Agnostic Shap Explanations for machine learning models}"}]
 # #     {"role": "assistant", "content": "Evolution is the scientific theory describing how all life forms on Earth change over successive generations through alterations in their genetic material, leading to the diversity of life seen today. This process involves changes in an organism's genetic makeup (genome), which result from processes like mutation and are influenced by natural selection, where individuals with advantageous traits for their environment leave more offspring."},
 # #     {"role": "user", "content": "Explain in detail"}
 # # ]

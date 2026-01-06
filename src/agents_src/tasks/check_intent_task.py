@@ -50,7 +50,17 @@ intent_task = Task(
 
     Step 3: Create Diverse Query and Category Lists (only if fetch = true)
     - If fetch = true, generate 1–5 short and diverse search queries (maximum 10 words each).
-    - Queries should:
+    - CRITICAL: The FIRST query in the list MUST be the specific paper title or exact topic requested by the user.
+      - Clean this first query of any fetch-related words (e.g., "fetch", "download", "find").
+      - It should be the exact thing the user is looking for.
+    - DELIMITER RULE: If the user provides the topic/title inside ANY of the following delimiters, you MUST extract the content EXACTLY as the FIRST query:
+      - Curly braces: {{ content }}
+      - Brackets: [content]
+      - Parentheses: (content)
+      - Double Quotes: "content"
+      - Single Quotes: 'content'
+      - Example: "fetch {{ Attention Is All You Need }}" -> First query: "Attention Is All You Need"
+    - The REMAINING queries should:
         - Use synonyms and paraphrases
         - Vary specificity (broad to specific)
         - Avoid keyword repetition
