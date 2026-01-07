@@ -77,13 +77,14 @@ def build_vector_store_from_documents(pdf_paths: Optional[List[str]] = None) -> 
                 # create a llama_index Document (keep metadata)
                 doc = Document(text=text, metadata={"source": p, "filename": os.path.basename(p)})
                 documents.append(doc)
-            if not documents:
-                logger.error("No valid documents were created from provided PDF paths.")
-                return 1
         else:
             logger.info(f"Loading documents from directory: {docs_dir_path}")
             loader = SimpleDirectoryReader(input_dir=docs_dir_path)
             documents = loader.load_data()
+
+        if not documents:
+            logger.error("No valid documents were created from provided PDF paths.")
+            return 1
 
         # Create parser with chunking strategy
         parser = SimpleNodeParser.from_defaults(chunk_size=1024, chunk_overlap=50)
@@ -111,20 +112,22 @@ def build_vector_store_from_documents(pdf_paths: Optional[List[str]] = None) -> 
         )
 
         logger.info("Vector store built successfully.")
-
-        for pdf_path in pdf_paths:
-            try:
-                if os.path.exists(pdf_path):
-                    os.remove(pdf_path)
-                    logger.info(f"Deleted temporary PDF: {pdf_path}")
-            except Exception as e:
-                logger.warning(f"Could not delete PDF file {pdf_path}: {e}")
-
         return 0
 
     except Exception as e:
         logger.exception(f"Error during vector store build: {e}")
         return 1
+    
+    finally:
+        # Always attempt to clean up temporary PDFs
+        if pdf_paths:
+            for pdf_path in pdf_paths:
+                try:
+                    if os.path.exists(pdf_path):
+                        os.remove(pdf_path)
+                        logger.info(f"Deleted temporary PDF: {pdf_path}")
+                except Exception as e:
+                    logger.warning(f"Could not delete PDF file {pdf_path}: {e}")
 
 
 def fetch_papers_and_ingest(queries: List[str], categories: List[str] = None, top_k: int = 3) -> dict:
@@ -230,7 +233,7 @@ def fetch_papers_and_ingest(queries: List[str], categories: List[str] = None, to
         return None  # no match
     
     logger.info(f"Found {len(all_results)} papers.")
-    logger.info(f"Candidates: {candidates}")
+    # logger.info(f"Candidates: {candidates}")
     
     docs_dir_path = settings.DOCUMENTS_DIR
     Path(docs_dir_path).mkdir(exist_ok=True)

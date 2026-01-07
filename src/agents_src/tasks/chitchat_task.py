@@ -18,6 +18,7 @@ class ChatMessage(BaseModel):
 class ChatInput(BaseModel):
   user_query: str
   chat_history: List[ChatMessage]
+  chat_summary: str
   fetch: bool
   papers: List[str]
   request: str
@@ -29,8 +30,9 @@ chitchat_task = Task(
     A lightweight chitchat handler. This task is invoked when the Intent Agent set "use_rag" to false.
 
     You receive the following input fields (see ChatInput):
-    - user_query: the original user message
-    - chat_history: prior conversation (excluding the latest user message)
+    - user_query: "{user_query}"
+    - chat_history: "{chat_history}"
+    - chat_summary: "{chat_summary}"
     - request: normalized query produced by the Intent Agent (may be empty)
     - fetch: whether a fetch attempt was made
     - papers: list of fetched paper titles (may be empty)

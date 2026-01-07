@@ -18,6 +18,7 @@ class ChatMessage(BaseModel):
 class ChatInput(BaseModel):
   user_query: str
   chat_history: List[ChatMessage]
+  chat_summary: str
   fetch: bool
   papers: List[str]
   request: str
@@ -31,7 +32,8 @@ qa_task = Task(
     You are given:
     - The original user message as: "{user_query}"
     - The normalized, self-contained question produced by the Intent Agent as `request`: "{request}"
-    - The full chat history as: "{chat_history}"
+    - Recent chat history: "{chat_history}"
+    - Conversation Summary: "{chat_summary}"
     - A boolean `fetch` indicating whether a fetch attempt was made and `papers` containing fetched paper titles: "{papers}"
 
     Instructions:

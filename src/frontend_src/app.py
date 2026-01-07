@@ -1,5 +1,6 @@
 import sys
 import os
+import uuid
 # Add project root to sys.path BEFORE any imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
@@ -15,6 +16,11 @@ st.set_page_config(
     layout="centered",
 )
 st.title("Research Assistant Chatbot 🤖")
+
+
+
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -40,7 +46,10 @@ if user_prompt:
     st.session_state.chat_history.append({"role": "user", "content": user_prompt})
 
     # Prepare payload for API
-    payload = {"chat_history": st.session_state.chat_history}
+    payload = {
+        "user_query": user_prompt,
+        "session_id": st.session_state.session_id
+    }
     try:
         response = requests.post(settings.CHAT_ENDPOINT_URL, json=payload)
         response.raise_for_status()

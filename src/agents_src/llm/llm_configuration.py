@@ -11,5 +11,9 @@ LLM_CONFIG = {
     "ChitChat Agent": {
         "model": "groq/llama-3.3-70b-versatile",
         "temperature": 0.7,
+    },
+    "Memory Assistant": {
+        "model": "groq/llama-3.3-70b-versatile",
+        "temperature": 0.1,
     }
 }

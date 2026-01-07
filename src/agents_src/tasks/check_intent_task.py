@@ -19,7 +19,11 @@ intent_task = Task(
     agent=intent_agent,
     name="Check Intent Task",
     description="""
-    Analyze the user's intent using the latest user message "{user_query}" and the prior conversation "{chat_history}".
+    Analyze the user's intent using the latest user message "{user_query}".
+    Context:
+    - Recent history (last 5 turns): "{chat_history}"
+    - Conversation Summary: "{chat_summary}"
+    
     Determine whether research papers need to be fetched and/or whether a question needs to be answered using RAG.
     Do NOT call any tools. Only analyze and decide intent based on user input and history.
 
