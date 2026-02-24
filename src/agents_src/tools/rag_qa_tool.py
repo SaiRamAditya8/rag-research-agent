@@ -60,26 +60,26 @@ def rag_query_tool(query: str) -> dict:
         embed_model=embed_model
     )
     # Create the retriever
-    retriever = index.as_retriever(similarity_top_k=10) # Retrieve top 10 initially
-    
+    retriever = index.as_retriever(similarity_top_k=settings.RETRIEVAL_TOP_K)
+
     # Retrieve initial nodes
     initial_nodes = retriever.retrieve(query)
-    
+
     if not initial_nodes:
         return {"answer": "No relevant context found.", "sources": []}
 
     # Prepare pairs for reranking: (query, chunk_text)
     pairs = [(query, node.node.get_content()) for node in initial_nodes]
-    
+
     # Compute relevance scores using the Cross-Encoder
     logger.info(f"Reranking {len(initial_nodes)} chunks...")
     scores = rerank_model.predict(pairs)
-    
+
     # Combine nodes with their scores and sort
     node_scores = sorted(zip(initial_nodes, scores), key=lambda x: x[1], reverse=True)
-    
-    # Select top K (K=3)
-    top_k_nodes = [node for node, score in node_scores[:3]]
+
+    # Select top K after reranking
+    top_k_nodes = [node for node, score in node_scores[:settings.RERANK_TOP_K]]
     
     # Create a response synthesizer
     response_synthesizer = get_response_synthesizer()

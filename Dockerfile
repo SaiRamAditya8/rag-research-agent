@@ -29,6 +29,10 @@ ENV COLLECTION_NAME="document_collection"
 ENV MODEL_NAME="llama-3.3-70b-versatile"
 ENV MODEL_TEMPERATURE=0.0
 ENV CHAT_ENDPOINT_URL="http://localhost:8000/chat/answer"
+ENV CHUNK_SIZE=512
+ENV CHUNK_OVERLAP=100
+ENV RETRIEVAL_TOP_K=15
+ENV RERANK_TOP_K=5
 
 # Run all services using start.sh
 CMD ["/app/start.sh"]

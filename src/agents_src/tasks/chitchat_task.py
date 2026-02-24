@@ -27,26 +27,24 @@ chitchat_task = Task(
     agent=chitchat_agent,
     name="ChitChat Task",
     description="""
-    A lightweight chitchat handler. This task is invoked when the Intent Agent set "use_rag" to false.
+    You are handling a conversational response. Do NOT call any retrieval tools.
 
-    You receive the following input fields (see ChatInput):
-    - user_query: "{user_query}"
-    - chat_history: "{chat_history}"
-    - chat_summary: "{chat_summary}"
-    - request: normalized query produced by the Intent Agent (may be empty)
-    - fetch: whether a fetch attempt was made
-    - papers: list of fetched paper titles (may be empty)
+    User message: "{user_query}"
+    Conversation history: "{chat_history}"
+    Conversation summary: "{chat_summary}"
+    Was a paper/topic fetch attempted this turn: {fetch}
+    Papers successfully fetched this turn: {papers}
 
-    Instructions:
-    - Do NOT call any retrieval tools.
-    - If the message is a greeting or casual chitchat (e.g., "hi", "thanks"), respond naturally and briefly.
-    - If fetch = true and papers is non-empty, acknowledge the fetch attempt and mention the number or list of papers fetched.
-    - If fetch = true but papers is empty, acknowledge that a fetch was attempted but no papers are available yet.
-    - If the normalized request contains a real question but use_rag is false, provide a short, best-effort response based on general knowledge (do NOT hallucinate facts about fetched documents).
+    Instructions — respond based on the situation:
+    - If {fetch} is true AND {papers} is non-empty: confirm the fetch succeeded.
+      List the fetched paper titles clearly. Example: "I've fetched the following papers for you: ..."
+    - If {fetch} is true AND {papers} is empty: apologise and let the user know no papers were found for their request.
+    - If {fetch} is false: this is a general conversation turn. Respond naturally to the user message.
+      If it is a greeting or small talk, reply briefly. If it is a genuine question, give a short best-effort answer.
+    - Never mention internal flags, system state, or implementation details in your response.
     - Keep responses concise, friendly, and user-facing.
 
     Output must match the AnswerStructure schema.
-
     """,
     expected_output="""
     A structured JSON object with the following fields:

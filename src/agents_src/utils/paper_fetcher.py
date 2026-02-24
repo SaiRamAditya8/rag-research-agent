@@ -264,7 +264,7 @@ def build_vector_store_from_documents(pdf_paths: Optional[List[str]] = None) -> 
             logger.error("No valid documents to ingest.")
             return 1
 
-        parser = SimpleNodeParser.from_defaults(chunk_size=1024, chunk_overlap=50)
+        parser = SimpleNodeParser.from_defaults(chunk_size=settings.CHUNK_SIZE, chunk_overlap=settings.CHUNK_OVERLAP)
         nodes = parser.get_nodes_from_documents(documents)
         logger.info(f"Parsed {len(nodes)} nodes.")
 
