@@ -206,9 +206,16 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# vector store dir
+# runtime data (vector store, downloaded docs)
+data/
 doc_vector_store/
+docs_dir/
 
 #macOS specific
 .DS_Store
 *.DS_Store
+
+# Claude Code local directory
+.claude/
+
+YTD.md

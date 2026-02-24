@@ -1,6 +1,4 @@
 from crewai import Agent
-
-from src.agents_src.tools.fetch_paper_tool import fetch_paper_tool
 from src.agents_src.llm.get_llm import get_llm_for_agent
 
 
@@ -11,17 +9,7 @@ llm = get_llm_for_agent(name)
 intent_agent = Agent(
     role="Check Intent Agent",
     llm=llm,
-    tools=[fetch_paper_tool],
-    goal="Analyze the latest user query (with chat history) and fetch the paper if needed:"
-            "Decide whether to fetch a new paper based on the user's intent."
-            "Decide if RAG should be used for answering."
-            "If the user wants to fetch a paper, decide what the standardized fetch/query parameters are and fetch and create vector embeddings the paper."
-            "Separate the question part from the user query if the user is asking a question.",
-    backstory="You are a highly precise intent classification specialist."
-                "Your only job is to read the user’s latest query and latest chat history and determine:"
-                "Does the user want new papers fetched?"
-                "Does the user want any question answered?"
-                "If yes, you will fetch and create vector embeddings for the paper using the fetch paper tool."
-                "You do not answer questions. But separate out the question part from the user query if the user is asking a question.",
+    goal="Analyze user intent to determine whether research papers need to be fetched and/or a question needs to be answered using RAG.",
+    backstory="You are a precise intent classification specialist. Your job is to analyze user queries and chat history to determine if the user wants papers fetched (fetch flag) and/or if they have a question to answer (use_rag flag). You normalize queries and provide clear intent signals without performing any actions.",
     verbose=True,
 )

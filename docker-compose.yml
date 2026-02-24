@@ -1,0 +1,25 @@
+services:
+  backend:
+    build: .
+    command: uvicorn src.backend_src.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      - DOCUMENTS_DIR=/app/data/docs
+      - VECTOR_STORE_DIR=/app/data/vector_store
+
+  frontend:
+    build: .
+    command: streamlit run src/frontend_src/app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      - CHAT_ENDPOINT_URL=http://backend:8000/chat/answer
+    depends_on:
+      - backend

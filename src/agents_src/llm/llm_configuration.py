@@ -1,11 +1,19 @@
 # LLM configuration mapping agent names to LLMs
 LLM_CONFIG = {
+    "Check Intent Agent": {
+        "model": "groq/llama-3.3-70b-versatile",
+        "temperature": 0.0,
+    },
     "Question Answer Agent": {
         "model": "groq/llama-3.3-70b-versatile",
         "temperature": 0.0,
     },
-    "Check Intent Agent": {
+    "ChitChat Agent": {
         "model": "groq/llama-3.3-70b-versatile",
-        "temperature": 0.0,
+        "temperature": 0.7,
+    },
+    "Memory Assistant": {
+        "model": "groq/llama-3.3-70b-versatile",
+        "temperature": 0.1,
     }
 }

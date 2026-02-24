@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy source code
 COPY src/ src/
-COPY docs_dir/ docs_dir/
+COPY scripts/ scripts/
 COPY start.sh ./start.sh
 
 # Make start.sh executable
@@ -22,10 +22,9 @@ RUN chmod +x start.sh
 # Expose backend and frontend ports
 EXPOSE 8000 8501
 
-# Set environment variables (can be overridden at runtime)
-ENV GROQ_API_KEY="your_groq_api_key"
-ENV DOCUMENTS_DIR="/app/docs_dir"
-ENV VECTOR_STORE_DIR="/app/doc_vector_store"
+# Non-secret defaults — override at runtime via env_file or -e flags
+ENV DOCUMENTS_DIR="/app/data/docs"
+ENV VECTOR_STORE_DIR="/app/data/vector_store"
 ENV COLLECTION_NAME="document_collection"
 ENV MODEL_NAME="llama-3.3-70b-versatile"
 ENV MODEL_TEMPERATURE=0.0

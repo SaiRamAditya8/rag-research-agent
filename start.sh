@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-# 1. Run document ingestion (one-time)
-python -m src.rag_doc_ingestion.ingest_docs
+# 1. Run document ingestion (one-time). Uncomment the line below if you need to ingest documents from DOCUMENTS_DIR and seed the vector store.
+# python scripts/seed_vectorstore.py
 
 # 2. Start backend API in background
 uvicorn src.backend_src.main:app --host 0.0.0.0 --port 8000 &

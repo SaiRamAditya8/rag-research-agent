@@ -8,19 +8,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-class ChatHistoryRequest(BaseModel):
-    chat_history: List[ChatMessage]
+class ChatRequest(BaseModel):
+    user_query: str
+    session_id: str = "default_session"
 
 @router.post("/chat/answer")
-def chat_answer(request: ChatHistoryRequest):
-    logger.info(f"Received API request with chat_history: {request.chat_history}")
+def chat_answer(request: ChatRequest):
+    logger.info(f"Received API request: session={request.session_id}, query={request.user_query}")
     try:
-        chat_history = [msg.dict() for msg in request.chat_history]
-        result = get_answer(chat_history)
+        result = get_answer(user_query=request.user_query, session_id=request.session_id)
         logger.info(f"API response: {result}")
         return result
     except Exception as e:

@@ -1,9 +1,14 @@
+"""
+Quick smoke test: kicks off the QA crew with a sample query and prints the result.
+Run from the project root:
+    python tests/check_crew.py
+"""
 from pprint import pprint
 
 from src.agents_src.crew import qa_crew
 
 input_data = {
-    "user_query": "Can you fetch Local Interpretable Model Agnostic Shap Explanations for machine learning models",
+    "user_query": "Hi there!",
     "chat_history": {}
 }
 
