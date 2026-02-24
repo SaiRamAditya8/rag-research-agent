@@ -1,3 +1,8 @@
+"""
+Quick smoke test: kicks off the QA crew with a sample query and prints the result.
+Run from the project root:
+    python tests/check_crew.py
+"""
 from pprint import pprint
 
 from src.agents_src.crew import qa_crew

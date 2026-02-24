@@ -52,23 +52,22 @@ intent_task = Task(
     - request must contain ONLY the knowledge-seeking question part.
     - If request is only chitchat (greeting, how are you, small talk), set use_rag = false and request = original message
 
-    Step 3: Create Diverse Query and Category Lists (only if fetch = true)
-    - If fetch = true, generate 1–5 short and diverse search queries (maximum 10 words each).
-    - CRITICAL: The FIRST query in the list MUST be the specific paper title or exact topic requested by the user.
-      - Clean this first query of any fetch-related words (e.g., "fetch", "download", "find").
-      - It should be the exact thing the user is looking for.
-    - DELIMITER RULE: If the user provides the topic/title inside ANY of the following delimiters, you MUST extract the content EXACTLY as the FIRST query:
-      - Curly braces: {{ content }}
-      - Brackets: [content]
-      - Parentheses: (content)
-      - Double Quotes: "content"
-      - Single Quotes: 'content'
-      - Example: "fetch {{ Attention Is All You Need }}" -> First query: "Attention Is All You Need"
-    - The REMAINING queries should:
-        - Use synonyms and paraphrases
-        - Vary specificity (broad to specific)
-        - Avoid keyword repetition
-        - Aim for semantic diversity
+    Step 3: Create Query and Category Lists (only if fetch = true)
+    - If fetch = true, generate 1–5 short search queries (maximum 10 words each).
+    - CRITICAL: The FIRST query MUST be the specific paper title or exact topic the user named.
+      - Remove any fetch-related words (e.g., "fetch", "download", "find", "get").
+      - It should be exactly what the user is looking for.
+    - DELIMITER RULE: If the user encloses the title/topic in any delimiter, extract it EXACTLY as the first query:
+      - Curly braces: {{ content }}  |  Brackets: [content]  |  Parentheses: (content)
+      - Double Quotes: "content"     |  Single Quotes: 'content'
+      - Example: "fetch {{ Attention Is All You Need }}" → first query: "Attention Is All You Need"
+    - TITLE LOOKUP vs TOPIC SEARCH — this distinction is critical for retrieval quality:
+      - TITLE LOOKUP: user asks for a specific paper by name (e.g. "fetch Attention is all you need", "get the BERT paper"):
+        - Return ONLY that exact title as the SINGLE query. Do NOT add topic expansion queries.
+        - Adding diverse queries like "transformer self-attention" will surface wrong papers that compete with the correct one.
+      - TOPIC SEARCH: user asks for papers on a subject (e.g. "fetch papers on attention mechanisms", "find recent RAG papers"):
+        - Generate 2–5 diverse queries using synonyms, paraphrases, and varying specificity.
+        - Aim for semantic diversity to surface a range of relevant papers.
     - Generate a separate list of arXiv categories:
         - Include a category only if reasonably confident
         - Otherwise use null
