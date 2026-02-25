@@ -6,18 +6,71 @@ This document is the single source of truth for the project's system design, com
 
 ## Table of Contents
 
-1. [High-Level Architecture](#1-high-level-architecture)
-2. [Component Details](#2-component-details)
-3. [Data Flow](#3-data-flow)
-4. [Deployment & Infrastructure](#4-deployment--infrastructure)
-5. [Scaling Considerations](#5-scaling-considerations)
-6. [Architectural Decisions & Critical Analysis](#6-architectural-decisions--critical-analysis)
+1. [Project Structure](#1-project-structure)
+2. [High-Level Architecture](#2-high-level-architecture)
+3. [Component Details](#3-component-details)
+4. [Data Flow](#4-data-flow)
+5. [Deployment & Infrastructure](#5-deployment--infrastructure)
+6. [Scaling Considerations](#6-scaling-considerations)
+7. [Architectural Decisions & Critical Analysis](#7-architectural-decisions--critical-analysis)
+8. [Known Gaps & Future Work](#8-known-gaps--future-work)
 
 ---
 
-## 1. High-Level Architecture
+## 1. Project Structure
 
-The system follows a **Modular Monolith** architecture wrapped in a containerized environment. While logically separated into "Agents", "Backend Services", and "Frontend", physically they run within the same process/container to minimize complexity and latency for this research prototype.
+```
+rag-res-agent/
+├── src/
+│   ├── agents_src/
+│   │   ├── agents/          # Agent definitions (intent, qa, chitchat)
+│   │   ├── config/
+│   │   │   └── agent_settings.py   # Centralized settings (env-backed)
+│   │   ├── crew.py          # CrewAI crew definitions
+│   │   ├── llm/             # LLM initialization (Groq)
+│   │   ├── models.py        # Shared model singletons (embed, rerank)
+│   │   ├── tasks/
+│   │   │   ├── check_intent_task.py
+│   │   │   ├── chitchat_task.py
+│   │   │   └── qa_task.py
+│   │   ├── tools/
+│   │   │   └── rag_qa_tool.py      # RAG retrieval + reranking tool
+│   │   └── utils/
+│   │       └── paper_fetcher.py    # Two-phase paper fetch + MMR ranking
+│   ├── backend_src/
+│   │   ├── api/             # FastAPI route handlers
+│   │   ├── memory/          # In-memory session store
+│   │   ├── services/        # Chat orchestration logic
+│   │   └── main.py
+│   └── frontend_src/
+│       └── app.py           # Streamlit UI
+├── scripts/
+│   └── seed_vectorstore.py  # One-time script to pre-seed vector store from local docs
+├── tests/
+│   └── check_crew.py        # Smoke test for QA crew
+├── data/                    # Runtime data (gitignored, mounted as volume)
+│   ├── docs/                # Downloaded PDFs
+│   └── vector_store/        # ChromaDB persistent storage
+├── docker-compose.yml
+├── Dockerfile
+├── start.sh
+├── steps.txt
+├── .env.example
+├── requirements.txt
+├── docs.md                  # This file
+└── DISCUSSION.md            # Collaborative planning notes
+```
+
+**Key conventions:**
+- `data/` is gitignored and should be bind-mounted in Docker so it persists across restarts.
+- `scripts/seed_vectorstore.py` is run manually (or optionally on startup via `start.sh`) to load a static document corpus before first use.
+- All tunable RAG constants live in `AgentSettings` — never hardcoded in tools/utils.
+
+---
+
+## 2. High-Level Architecture
+
+The system follows a **Modular Monolith** architecture wrapped in a containerized environment. While logically separated into "Agents", "Backend Services", and "Frontend", they run within the same process/container to minimize complexity and latency for this research prototype.
 
 ### System Context Diagram
 
@@ -34,135 +87,171 @@ graph TD
 
     subgraph "Data & Storage"
         QACrew <--> VectorDB[(ChromaDB)]
-        IntentCrew --> ArXivAPI[ArXiv API]
+        IntentCrew --> PaperFetcher[Paper Fetcher]
+        PaperFetcher --> ArXivAPI[ArXiv API]
+        PaperFetcher --> SemanticScholar[Semantic Scholar API]
         BackendAPI <--> Memory[In-Memory Session Store]
     end
 
     subgraph "External AI Services"
         IntentCrew & QACrew & ChitChatCrew --> GroqAPI[Groq LLM API]
-        QACrew --> HuggingFace[Local Embeddings/Reranker]
+        QACrew --> HuggingFace[Local Embeddings / Reranker]
+        PaperFetcher --> HuggingFace
     end
 ```
 
 ---
 
-## 2. Component Details
+## 3. Component Details
 
 ### A. Frontend Layer
-- **Technology**: Streamlit / Python
+- **Technology**: Streamlit
 - **Location**: `src/frontend_src/app.py`
 - **Role**:
   - Renders the Chat UI.
   - Manages explicit `session_id` generation (UUID).
   - Displays markdown responses and source citations.
-  - **Stateless**: expects the backend to manage conversation history.
+  - **Stateless**: all conversation history managed by the backend.
 
 ### B. Backend API Layer (FastAPI)
 - **Technology**: FastAPI
 - **Location**: `src/backend_src/api/chat.py` & `src/backend_src/services/chat.py`
 - **Role**:
-  - Exposes `POST /chat` endpoint (or internal function `get_answer`).
+  - Exposes `POST /chat/answer` endpoint.
   - **Orchestrator**: Receives query → Updates Memory → calls Intent Agent → Routing Logic → calls QA/ChitChat Agent → Updates Summary → Returns Response.
 - **State Management**:
-  - Uses `src/backend_src/memory/session_store.py` to hold `sessions` dictionary in RAM.
-  - **Critical Note**: If the application restarts, all active session memory is lost (not currently persisted to disk).
+  - `src/backend_src/memory/session_store.py` holds `sessions` dict in RAM.
+  - Session memory is lost on process restart (not persisted to disk).
 
 ### C. Agent Layer (CrewAI)
-- **Technology**: CrewAI, LangChain/LlamaIndex primitives
+- **Technology**: CrewAI
 - **Location**: `src/agents_src/`
-- **Components**:
-  1. **Intent Agent**
-     - **Model**: Groq (Llama-3.3-70B, temp=0.0)
-     - **Task**: Router — classifies input as `fetch`, `use_rag`, or `chitchat`.
-     - **Input**: User query + Conversation Summary + Last 5 turns.
-     - **Output**: JSON struct `{fetch: bool, use_rag: bool, queries: [], ...}`.
-  2. **QA Agent (Researcher)**
-     - **Model**: Groq (Llama-3.3-70B, temp=0.0)
-     - **Tools**: `rag_query_tool`
-     - **Role**: Synthesizes answers from retrieved chunks.
-  3. **ChitChat Agent**
-     - **Model**: Groq (Llama-3.3-70B, temp=0.7)
-     - **Role**: Handles greetings and general conversation without RAG.
+
+| Agent | Model | Temp | Role |
+| :--- | :--- | :--- | :--- |
+| Intent Agent | Groq Llama-3.3-70B | 0.0 | Classifies query → `{fetch, use_rag, queries, category, ...}` |
+| QA Agent | Groq Llama-3.3-70B | 0.0 | Synthesizes answers from retrieved chunks via `rag_query_tool` |
+| ChitChat Agent | Groq Llama-3.3-70B | 0.7 | Handles greetings and general conversation |
+
+**Intent Agent query generation rules** (`check_intent_task.py`):
+- **TITLE LOOKUP** (user asks for a specific paper by name): return the exact title as a **single query** — no expansion.
+- **TOPIC SEARCH** (user asks for papers on a subject): generate **2–5 diverse queries** covering different facets.
 
 ### D. Data Ingestion & Retrieval Layer
-- **Technology**: LlamaIndex, ChromaDB, PyMuPDF
-- **Location**: `src/agents_src/utils/paper_fetcher.py` & `rag_qa_tool.py`
-- **Pipeline**:
-  1. **Fetch**: Queries ArXiv API based on Intent output.
-  2. **Filter**: Deduplicates papers using title similarity.
-  3. **Ingest**: Downloads PDF → Extracts Text → Chunking (1024 tokens) → Embedding (HuggingFace) → Store in ChromaDB.
-  4. **Retrieve**: Vector Search (Top-10) → Cross-Encoder Reranking (Top-3) → Synthesis.
+- **Technology**: LlamaIndex, ChromaDB, PyMuPDF, HuggingFace Transformers
+- **Location**: `src/agents_src/utils/paper_fetcher.py` & `src/agents_src/tools/rag_qa_tool.py`
+
+#### Paper Fetching Pipeline (two-phase)
+
+**Phase 1 — Title-specific search** (runs for every query):
+- ArXiv `ti:` field search (title only, not full-text).
+- Semantic Scholar API (`/graph/v1/paper/search`).
+- Results split by title similarity (`SequenceMatcher` ratio ≥ 0.75) into:
+  - **Confirmed matches** — known to be the right paper.
+  - **Broad candidates** — potentially relevant.
+
+**Phase 2 — Broad topic search** (for all queries × categories):
+- ArXiv `all:` search across all configured categories.
+- Results added to broad candidates pool.
+
+**Ranking & Selection** (cross-encoder + MMR):
+1. Cross-encoder (`BAAI/bge-reranker-large`) scores **all candidates** in one batch against the primary query.
+2. Scores are min-max normalized to [0, 1].
+3. Embeddings computed for all candidates (for MMR redundancy term).
+4. **Confirmed matches** fill first slots by pure cross-encoder relevance.
+5. **Remaining slots** filled by MMR from broad candidates:
+   ```
+   MMR score = λ × cross_encoder_score − (1−λ) × max_cosine_sim(candidate, already_selected)
+   ```
+   λ = 0.7 (configurable via `MMR_LAMBDA` constant).
+
+**Download & Ingest**:
+- Download PDFs (ArXiv direct or `openAccessPdf.url` from Semantic Scholar).
+- Parse with PyMuPDF → chunk (512 tokens, 100 overlap) → embed → store in ChromaDB.
+
+#### RAG Retrieval Pipeline (`rag_qa_tool.py`)
+1. Vector search → top `RETRIEVAL_TOP_K` (15) chunks.
+2. Cross-encoder rerank → keep top `RERANK_TOP_K` (5) chunks.
+3. Synthesize answer with LlamaIndex `ResponseSynthesizer`.
+
+#### Centralized RAG Settings (`agent_settings.py`)
+
+| Setting | Default | Env Var | Description |
+| :--- | :--- | :--- | :--- |
+| `CHUNK_SIZE` | 512 | `CHUNK_SIZE` | Tokens per chunk at ingestion |
+| `CHUNK_OVERLAP` | 100 | `CHUNK_OVERLAP` | Overlap between consecutive chunks |
+| `RETRIEVAL_TOP_K` | 15 | `RETRIEVAL_TOP_K` | Candidate chunks from vector search |
+| `RERANK_TOP_K` | 5 | `RERANK_TOP_K` | Chunks kept after cross-encoder rerank |
 
 ---
 
-## 3. Data Flow
+## 4. Data Flow
 
 ### Query Flow
-1. **User** types "Explain Attention mechanism".
+1. **User** types "Explain the Attention mechanism."
 2. **Frontend** sends `{"user_query": "...", "session_id": "xyz"}` to Backend.
 3. **SessionStore** adds user message to `chat_buffer`.
 4. **Backend** calls **Intent Agent** with History + Summary.
-5. **Intent Agent** returns `{use_rag: True, request: "Explain Attention"}`.
-6. **Backend** sees `use_rag=True`, chooses **QA Crew**.
-7. **QA Crew** calls `rag_query_tool("Explain Attention")`.
-   - Retrieves relevant chunks from Chroma.
-   - Reranks chunks.
-   - Generates answer with citations.
-8. **Backend** receives answer, adds to `chat_buffer`.
-9. **Backend** triggers **Memory Assistant** (async/sync) to update `chat_summary`.
-10. **Frontend** displays answer.
+5. **Intent Agent** returns `{use_rag: true, fetch: false, queries: [...]}`.
+6. **Backend** routes to **QA Crew**.
+7. **QA Crew** calls `rag_query_tool("Explain Attention mechanism")`.
+   - Vector search → top 15 chunks.
+   - Cross-encoder rerank → top 5 chunks.
+   - Generate answer with citations.
+8. **Backend** appends answer to `chat_buffer`, updates `chat_summary`.
+9. **Frontend** displays answer.
 
 ### Paper Fetching Flow
-1. **User** types "Find papers on FlashAttention".
-2. **Intent Agent** returns `{fetch: True, queries: ["FlashAttention"], ...}`.
+1. **User** types "Fetch the 'Attention is All You Need' paper."
+2. **Intent Agent** returns `{fetch: true, queries: ["Attention is All You Need"], category: "cs.LG"}`.
 3. **Backend** calls `fetch_papers_and_ingest`.
-4. **System** searches ArXiv → Downloads PDFs → Embeds to Chroma → Returns success message.
-5. **Backend** proceeds to QA Flow (optional) or informs user "Papers acquired."
+4. **Phase 1**: ArXiv `ti:` + Semantic Scholar search → confirmed match found.
+5. **Phase 2**: Broad `all:` search for remaining candidates.
+6. **Ranking**: Cross-encoder scores all; confirmed fills first slot; MMR selects from broad.
+7. **Ingest**: PDFs downloaded → chunked → embedded → stored in ChromaDB.
+8. **ChitChat Agent** informs user which papers were fetched (or apologizes if none found).
 
 ---
 
-## 4. Deployment & Infrastructure
-
-The system is designed to be deployed as a single **Docker Container**.
+## 5. Deployment & Infrastructure
 
 ### Docker Structure
 - **Base Image**: `python:3.11-slim`
 - **Dependencies**: `build-essential` required for compiling vector/numpy libraries.
 - **Ports**:
-  - `8501`: Streamlit UI (public facing)
-  - `8000`: FastAPI (internal or public API)
+  - `8501`: Streamlit UI
+  - `8000`: FastAPI backend
 
 ### Volume Management
-Mount volumes to persist data across container restarts:
+Mount `./data` to persist runtime data across container restarts:
 
-| Volume | Container Path | Host Path |
+| What | Container Path | Host Path |
 | :--- | :--- | :--- |
-| Vector Store (ChromaDB) | `/app/doc_vector_store` | `./data/chroma_db` |
-| Downloaded PDFs (debug) | `/app/docs_dir` | `./data/docs` |
+| ChromaDB vector store | `/app/data/vector_store` | `./data/vector_store` |
+| Downloaded PDFs | `/app/data/docs` | `./data/docs` |
 
 ### Environment Variables
-| Variable | Required | Description |
-| :--- | :--- | :--- |
-| `GROQ_API_KEY` | Yes | Required for all Agents |
-| `MODEL_NAME` | No | Defaults to `llama-3.3-70b-versatile` |
-| `VECTOR_STORE_DIR` | No | Internal path for ChromaDB |
 
-### Managed vs. Self-Hosted Services
-| Component | Managed Service | Self-Hosted |
-| :--- | :--- | :--- |
-| LLM Inference | **Groq API** (Cloud) | — |
-| Embeddings | — | **HuggingFace** (Local, CPU/GPU) |
-| Vector DB | — | **ChromaDB** (Local File-based) |
-| Reranking | — | **Cross-Encoder** (Local) |
-| Frontend/API | — | **Streamlit/FastAPI** (Local) |
+| Variable | Required | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `GROQ_API_KEY` | Yes | — | Required for all agents |
+| `MODEL_NAME` | No | `llama-3.3-70b-versatile` | Groq model to use |
+| `DOCUMENTS_DIR` | No | `/app/data/docs` | PDF storage path |
+| `VECTOR_STORE_DIR` | No | `/app/data/vector_store` | ChromaDB path |
+| `COLLECTION_NAME` | No | `research_papers` | ChromaDB collection name |
+| `CHUNK_SIZE` | No | `512` | Tokens per chunk |
+| `CHUNK_OVERLAP` | No | `100` | Token overlap between chunks |
+| `RETRIEVAL_TOP_K` | No | `15` | Vector search candidate count |
+| `RERANK_TOP_K` | No | `5` | Chunks kept after reranking |
+
+Copy `.env.example` to `.env` and fill in `GROQ_API_KEY` at minimum.
 
 ### Running with Docker Compose (recommended)
 
 ```bash
-# Copy and fill in your API key
 cp .env.example .env
+# edit .env and set GROQ_API_KEY
 
-# Build and start both services
 docker compose up --build
 
 # Stop
@@ -195,144 +284,146 @@ docker rm rag-res-agent
 docker rmi rag-res-agent:latest
 ```
 
----
+### Managed vs. Self-Hosted Services
 
-## 5. Scaling Considerations
-
-- **Concurrency**: `PersistentClient` in ChromaDB is **not thread-safe for concurrent writes**. Multiple users triggering paper ingestion simultaneously may corrupt or lock the DB.
-  - *Fix*: Move to client-server Chroma deployment.
-- **Memory**: Cross-Encoder and Embedding models are loaded into RAM. Expect ~2–4 GB container memory usage depending on model size.
-- **Statelessness**: `SessionStore` is currently in-memory. Scaling to 2+ containers requires moving session state to **Redis**.
-
----
-
-## 6. Architectural Decisions & Critical Analysis
-
-This section captures the key architectural decisions, their trade-offs, biases, and viable alternatives for production scaling.
+| Component | Managed Service | Self-Hosted |
+| :--- | :--- | :--- |
+| LLM Inference | **Groq API** (Cloud) | — |
+| Embeddings | — | **HuggingFace** (Local) |
+| Vector DB | — | **ChromaDB** (Local file-based) |
+| Reranking | — | **BAAI/bge-reranker-large** (Local) |
+| Frontend/API | — | **Streamlit/FastAPI** (Local) |
 
 ---
 
-### 6.1 LLM Selection
+## 6. Scaling Considerations
 
-**Current Decision**: Groq (llama-3.3-70B-versatile)
+- **Concurrency**: `PersistentClient` ChromaDB is **not thread-safe for concurrent writes**. Multiple users triggering paper ingestion simultaneously may corrupt the DB. Fix: run Chroma as a separate Docker service in client-server mode.
+- **Memory**: Cross-Encoder + Embedding models load into RAM (~2–4 GB depending on hardware).
+- **Statelessness**: `SessionStore` is in-memory. Scaling to 2+ containers requires Redis for shared session state.
+- **Ingestion blocking**: PDF download + embedding is synchronous and blocks the request. For production, offload to a background worker (Celery / asyncio task).
 
-**Options Considered**
-- **Ollama (llama-3.1-8B)**: Local execution.
-- **OpenAI GPT-4o / Claude 3.5 Sonnet**: High-end hosted models.
-- **Groq**: Selected for speed/quality balance.
+---
 
-**Analysis**
-The choice of Groq is biased towards **latency optimization**. In an agentic loop (Intent → Router → Tool → Response), latency compounds — a 2s delay per step results in an 8–10s user-side wait. Groq's LPU architecture solves this.
+## 7. Architectural Decisions & Critical Analysis
+
+### 7.1 LLM Selection
+
+**Current**: Groq (llama-3.3-70B-versatile)
+
+**Rationale**: Latency optimization. In an agentic loop (Intent → Router → Tool → Response), latency compounds. Groq's LPU architecture minimizes per-step delay.
 
 **Risk Factors**:
-1. **Rate Limits**: Groq's tiers can be restrictive vs. OpenAI.
-2. **Context Window**: Production RAG often demands 128k+ tokens for full paper analysis.
-3. **Instruction Following**: Occasionally requires retry logic for strict JSON schemas.
+1. Rate limits more restrictive than OpenAI.
+2. Context window may constrain full paper analysis.
+3. Strict JSON schema output occasionally needs retry logic.
 
-**Alternatives**
-- ✅ **Hybrid Approach (Router = Small/Fast, Analyzer = Smartest)**: Use a smaller model (e.g., Llama-3-8B) for the Intent Agent (classification only) and GPT-4o or Claude for the QA Agent (complex synthesis). Reduces cost; improves quality on research summaries. Downside: multiple API keys/providers.
-- ❌ **Pure Local 8B/7B Models**: Insufficient for reliable one-shot reasoning in the Router pattern. High misclassification rates and malformed JSON outputs.
-
----
-
-### 6.2 Agent Architecture
-
-**Current Decision**: CrewAI (Router Pattern)
-
-**Options Considered**
-- **Single Chain**: Linear execution.
-- **LangGraph**: Cyclic graph based.
-- **CrewAI**: Task-based orchestration. Selected.
-
-**Analysis**
-CrewAI's "Role-Playing" abstraction compartmentalizes prompts well, but enforces **sequential overhead** — treating agents as distinct entities that must "think" before acting adds latency even for trivial tasks. Using a full Crew for a simple boolean `fetch` check is non-trivial overhead.
-
-**Alternatives**
-- ✅ **Functional Router (Code-based or Simple LLM Call)**: Replace the Intent Crew with a raw `client.chat.completions.create` call enforcing a JSON schema, or keyword heuristics for obvious cases. Cuts 500ms–1s per interaction. Less extensible if intent logic grows complex.
-- ✅ **LangGraph for Cyclic Flows**: Enables "Deep Research" where the agent loops (`Plan → Fetch → Read → Realize it needs more → Fetch Again`). State transitions are explicit and easier to debug.
+**Alternatives**:
+- ✅ **Hybrid Router/Analyzer**: Small/fast model (e.g., Llama-3-8B) for Intent classification; larger model (GPT-4o or Claude) for QA synthesis. Lower cost, better synthesis quality. Requires multiple API keys.
+- ❌ **Pure Local 8B models**: Insufficient instruction-following for reliable JSON schema output in Intent Agent.
 
 ---
 
-### 6.3 RAG Strategy
+### 7.2 Agent Architecture
 
-**Current Decision**: Agentic RAG (Intent-Driven, Conditional Retrieval)
+**Current**: CrewAI (Router Pattern)
 
-**Options Considered**
-- **Standard RAG**: Always retrieve.
-- **Agentic RAG**: Conditional retrieval. Selected.
+**Analysis**: CrewAI's role-playing abstraction compartmentalizes prompts well, but adds sequential overhead — treating agents as distinct "thinking" entities adds latency even for simple classification tasks.
 
-**Analysis**
-The system relies entirely on the Intent Agent to decide *when* to retrieve. **The Flaw**: "Unknown Unknowns" — if a user asks something that *sounds* like chitchat but requires context (e.g., "What did we discuss about the third paper?"), a rigid intent classifier may miss it. We implicitly assume users strictly separate "chatting" from "working".
-
-**Alternatives**
-- ✅ **Speculative RAG (Parallelization)**: Run the RAG retriever *in parallel* with Intent classification. If Intent says "No RAG", discard the results. Zero latency penalty; 50% wasted compute on non-RAG queries.
-- ❌ **Keyword-Only Triggering**: Too brittle. Fails on implicit references like "Tell me more about that contradiction".
+**Alternatives**:
+- ✅ **Functional Router**: Replace Intent Crew with a raw `client.chat.completions.create` call enforcing a JSON schema. Cuts ~500ms–1s per interaction. Less extensible if intent logic grows complex.
+- ✅ **LangGraph for Cyclic Flows**: Enables "Deep Research" loops (`Plan → Fetch → Read → Realize it needs more → Fetch Again`). State transitions are explicit and debuggable.
 
 ---
 
-### 6.4 Embedding Model
+### 7.3 RAG Strategy
 
-**Current Decision**: HuggingFace Embeddings (Local, Shared Singleton)
+**Current**: Agentic RAG (Intent-Driven, Conditional Retrieval)
 
-**Options Considered**
-- **OpenAI Embeddings**: API-based.
-- **Local HuggingFace**: Selected.
+**Analysis**: Relies entirely on the Intent Agent to decide *when* to retrieve. The flaw: "Unknown Unknowns" — e.g., "What did we discuss about the third paper?" may be misclassified as chitchat by a rigid intent classifier.
 
-**Analysis**
-Local embeddings are great for privacy and cost, but `HuggingFaceEmbedding` defaults can be slow on CPU-only containers and block the main thread during large PDF ingestion, making the UI feel unresponsive.
-
-**Alternatives**
-- ✅ **Asynchronous Ingestion Service**: Offload embedding generation to a separate worker process or microservice (e.g., a dedicated TEI container). Chat remains responsive while the agent reads in the background. Adds deployment complexity (Redis/Celery or separate containers).
-- ✅ **OpenAI `text-embedding-3-small`**: Extremely cheap, fast, widely supported (1536 dimensions). Downside: vendor lock-in; switching later effectively requires re-indexing everything.
+**Alternatives**:
+- ✅ **Speculative RAG**: Run retriever *in parallel* with Intent classification. If Intent says no RAG, discard. Zero latency penalty; ~50% wasted compute on non-RAG queries.
+- ❌ **Keyword-Only Triggering**: Too brittle. Fails on implicit references.
 
 ---
 
-### 6.5 Vector Store
+### 7.4 Embedding Model
 
-**Current Decision**: ChromaDB (Persistent Local)
+**Current**: HuggingFace Embeddings (Local Singleton)
 
-**Analysis**
-Chroma in `PersistentClient` ("files") mode is effectively SQLite — intended for single-user local sessions. It is **not thread-safe for concurrent writes**. Deploying for two simultaneous users would cause one to block the other.
+**Analysis**: Good for privacy and cost. Blocks the main thread during large PDF ingestion on CPU-only containers.
 
-**Alternatives**
-- ✅ **Client-Server Mode (Dockerized Chroma)**: Run Chroma as a separate service in `docker-compose`. Handles concurrency better; decouples storage from application logic. One more container to manage.
-- ❌ **In-Memory Only**: Users lose their entire knowledge base on container restart.
-
----
-
-### 6.6 Paper Fetching & Ranking
-
-**Current Decision**: Fetch → Deduplicate → Rank by Similarity → Ingest Top-3
-
-**Analysis**
-This pipeline prioritizes **bandwidth** over **recall**. Filtering by title/abstract similarity *before* downloading PDFs may discard papers with vague abstracts but highly relevant content deep in the text. **Biased Assumption**: "Abstracts accurately represent paper content" (often false in academia).
-
-**Alternatives**
-- ✅ **Full-Text "Flash" Ingestion**: Download Top-10 PDFs, convert to text, run a fast keyword or cheap-model scan before embedding. Significantly higher recall for specific facts. High bandwidth/compute; slower time-to-first-token.
-- ✅ **Cross-Encoder for Pre-Ranking**: Apply the Cross-Encoder on *abstracts* during the initial search phase (not just on chunks post-ingestion) for better PDF selection before download.
+**Alternatives**:
+- ✅ **Async Ingestion Worker**: Offload embedding to a separate process/service. Chat remains responsive. Adds deployment complexity.
+- ✅ **OpenAI `text-embedding-3-small`**: Fast and cheap. Vendor lock-in; switching models requires full re-indexing.
 
 ---
 
-### 6.7 Memory & Summarization
+### 7.5 Vector Store
 
-**Current Decision**: Rolling Summary + Sliding Window
+**Current**: ChromaDB (Persistent Local, file-based)
 
-**Analysis**
-This is a "Lossy Compression" algorithm. Every summarization pass loses detail. After 10 turns, the nuance of "Why I disliked the second paper" may be smoothed into "User discussed papers." We prioritize token savings over perfect recall.
+**Analysis**: Effectively SQLite — intended for single-user local sessions. Not thread-safe for concurrent writes.
 
-**Alternatives**
-- ✅ **Structured Knowledge Graph (Entity Extraction)**: Extract entities: `User_Interest: [Transformers, RAG]`, `Papers_Read: [Attention is All You Need]`. Perfect recall of specific facts. Hard to implement without a fixed schema.
-- ✅ **Vectorized Memory (store turns in Chroma)**: Embed every user interaction; retrieve "relevant past thoughts" alongside document chunks. Infinite effective memory window. Adds complexity — two retrieval pools (Docs vs. Memory) to balance and rerank.
+**Alternatives**:
+- ✅ **Client-Server Chroma (Dockerized)**: Run Chroma as a separate service. Handles concurrency; decouples storage from app logic.
+- ❌ **In-Memory Only**: Knowledge base lost on restart.
 
 ---
 
-### 6.8 Deployment
+### 7.6 Paper Fetching & Ranking
 
-**Current Decision**: Monolithic Docker Container
+**Current**: Two-phase fetch (title search + broad search) → Cross-encoder ranking → MMR diversity selection
 
-**Analysis**
-The current setup bundles the App, Vector DB files, and downloaded PDFs into one image/volume. **Horizontal scaling is impossible** — spinning up 2 instances would create fragmented, divergent memory files.
+**Why two-phase**: ArXiv `all:` search is too broad for specific paper lookups. Using `ti:` (title field) for confirmed matches dramatically improves precision for requests like "Fetch the Attention is All You Need paper."
 
-**Alternatives**
-- ✅ **Decomposed Architecture**: 1 Container each for Frontend, Backend API, Vector DB, and Redis (caching). Allows independent scaling of the stateless Backend API. Risk: "Microservices Hell" for a simple prototype.
-- ❌ **Serverless Functions (AWS Lambda)**: Loading HuggingFace Embedding/CrossEncoder models takes seconds per cold start — unworkable. Models need to be resident in memory.
+**Why Semantic Scholar**: Provides an independent index with direct open-access PDF links, catching papers that ArXiv's title search may miss or rank poorly.
+
+**Why cross-encoder over bi-encoder for ranking**: Cross-encoders jointly attend over the (query, document) pair rather than independently encoding each — significantly better at capturing query-document relevance. More compute-intensive but applied to a small candidate set (no runtime cost issue).
+
+**Why MMR for diversity**: Among broad candidates, papers can be highly relevant but cover the same narrow aspect. MMR (`λ=0.7`) penalizes candidates too similar to already-selected papers, ensuring broader topic coverage.
+
+**Alternatives**:
+- ✅ **Cross-encoder on abstracts pre-download**: Apply cross-encoder to abstract text during initial search to avoid downloading low-relevance PDFs. Reduces bandwidth/storage.
+- ✅ **Full-text "flash" scan before full ingestion**: Download all candidates, run cheap keyword scan, then decide which to fully embed. Higher recall, slower pipeline.
+
+---
+
+### 7.7 Memory & Summarization
+
+**Current**: Rolling Summary + Sliding Window (last 5 turns)
+
+**Analysis**: Lossy compression. Every summarization pass loses nuance. After 10 turns, details like "the user disagreed with the second paper's methodology" may be smoothed away.
+
+**Alternatives**:
+- ✅ **Structured Knowledge Graph**: Extract entities (`User_Interest: [RAG, Transformers]`, `Papers_Discussed: [...]`). Perfect recall for specific facts. Requires a fixed schema.
+- ✅ **Vectorized Memory**: Embed every turn; retrieve "relevant past thoughts" alongside document chunks. Adds a second retrieval pool to balance.
+
+---
+
+### 7.8 Deployment
+
+**Current**: Monolithic Docker Container (docker-compose with two services from the same image)
+
+**Analysis**: Both frontend and backend run from the same image for simplicity. Horizontal scaling is not possible because ChromaDB and session state are local to each container.
+
+**Alternatives**:
+- ✅ **Decomposed Architecture**: Separate containers for Frontend, Backend API, ChromaDB (server mode), and Redis. Enables independent scaling of the stateless API. Risk: added operational complexity for a prototype.
+- ❌ **Serverless (AWS Lambda)**: Loading HuggingFace models takes seconds on cold start — unworkable. Models must be resident in memory.
+
+---
+
+## 8. Known Gaps & Future Work
+
+These gaps are tracked in `DISCUSSION.md` with concrete implementation suggestions.
+
+### Conversational RAG
+
+| Gap | Impact | Suggested Fix |
+| :--- | :--- | :--- |
+| `rag_query_tool` synthesizes without conversation context | Responses ignore prior discussion | Pass `chat_summary` into `ResponseSynthesizer` prompt |
+| No standalone query rewriting | Follow-up questions ("Tell me more about that") fail retrieval | Rewrite query using chat history before vector search |
+| No chunk deduplication across turns | Same chunks re-retrieved on follow-ups, repetitive answers | Track `retrieved_chunk_ids` in session; penalize or skip seen chunks |
+| Session-scoped vector store | All users share one global ChromaDB collection | Namespace by `session_id` in collection metadata |
+| No structured research memory | Agent forgets "User disliked paper X" after summarization | Extract structured notes from each turn, store alongside summary |
