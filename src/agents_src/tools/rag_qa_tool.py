@@ -1,120 +1,110 @@
 import logging
+from typing import Dict, List
 
-from crewai.tools import tool
-from llama_index.core import VectorStoreIndex, StorageContext
-from llama_index.vector_stores.chroma import ChromaVectorStore
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.llms.groq import Groq
-from llama_index.core import Settings, get_response_synthesizer
 import chromadb
-from sentence_transformers import CrossEncoder
+from llama_index.core import VectorStoreIndex, StorageContext, Settings, get_response_synthesizer
+from llama_index.vector_stores.chroma import ChromaVectorStore
+from llama_index.llms.groq import Groq
 
 from src.agents_src.config.agent_settings import AgentSettings
-
-# Import shared model singletons
 from src.agents_src.llm.models import embed_model, rerank_model
 
-# Get a logger for this module
 logger = logging.getLogger(__name__)
 
 
-@tool
-def rag_query_tool(query: str) -> dict:
+class RAGQueryTool:
     """
-    Answers a query by retrieving relevant documents, reranking them for precision, and generating a response.
-    Returns both the generated answer and the source file names from which the information was retrieved.
+    Singleton RAG query tool.
 
-    Args:
-        query (str): The input query string to be processed.
-
-    Returns:
-        dict: A dictionary with the following keys:
-            - 'answer': The generated answer string.
-            - 'sources': List of source file names used for retrieval.
-
-    Notes:
-        - Uses vector search to get top 10 chunks, then reranks with BAAI/bge-reranker-large.
-        - The final answer is generated using the top 3 chunks after reranking.
-        - Requires properly configured AgentSettings and access to the vector store.
+    ChromaDB client, LlamaIndex index, and retriever are initialised ONCE at
+    construction time and reused across all calls.  New documents added by
+    paper_fetcher (which shares the same PersistentClient path) are visible
+    automatically because the underlying ChromaDB collection is live.
     """
 
-    settings = AgentSettings()
-    vector_store_path = settings.VECTOR_STORE_DIR
-    collection_name = settings.COLLECTION_NAME
-    # Configure LLM
-    Settings.llm = Groq(
-        model=settings.MODEL_NAME,
-        temperature=settings.MODEL_TEMPERATURE,
-        api_key=settings.GROQ_API_KEY,
-    )
-    # Load Chroma collection
-    db = chromadb.PersistentClient(path=vector_store_path)
-    chroma_collection = db.get_or_create_collection(collection_name)
-    # connect to the vector store
-    vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-    storage_context = StorageContext.from_defaults(vector_store=vector_store)
-    # Load index from Chroma
-    index = VectorStoreIndex.from_vector_store(
-        vector_store=vector_store,
-        storage_context=storage_context,
-        embed_model=embed_model
-    )
-    # Create the retriever
-    retriever = index.as_retriever(similarity_top_k=settings.RETRIEVAL_TOP_K)
+    def __init__(self):
+        settings = AgentSettings()
 
-    # Retrieve initial nodes
-    initial_nodes = retriever.retrieve(query)
+        # Configure the global LlamaIndex LLM once
+        Settings.llm = Groq(
+            model=settings.MODEL_NAME,
+            temperature=settings.MODEL_TEMPERATURE,
+            api_key=settings.GROQ_API_KEY,
+        )
+        Settings.embed_model = embed_model
 
-    if not initial_nodes:
-        return {"answer": "No relevant context found.", "sources": []}
+        self._settings = settings
+        self._rerank_model = rerank_model
 
-    # Prepare pairs for reranking: (query, chunk_text)
-    pairs = [(query, node.node.get_content()) for node in initial_nodes]
+        db = chromadb.PersistentClient(path=settings.VECTOR_STORE_DIR)
+        chroma_collection = db.get_or_create_collection(settings.COLLECTION_NAME)
+        vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+        storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-    # Compute relevance scores using the Cross-Encoder
-    logger.info(f"Reranking {len(initial_nodes)} chunks...")
-    scores = rerank_model.predict(pairs)
+        self._index = VectorStoreIndex.from_vector_store(
+            vector_store=vector_store,
+            storage_context=storage_context,
+            embed_model=embed_model,
+        )
+        self._retriever = self._index.as_retriever(
+            similarity_top_k=settings.RETRIEVAL_TOP_K
+        )
+        self._synthesizer = get_response_synthesizer()
 
-    # Combine nodes with their scores and sort
-    node_scores = sorted(zip(initial_nodes, scores), key=lambda x: x[1], reverse=True)
+        logger.info(
+            f"RAGQueryTool initialised | collection={settings.COLLECTION_NAME} "
+            f"top_k={settings.RETRIEVAL_TOP_K} rerank_k={settings.RERANK_TOP_K}"
+        )
 
-    # Select top K after reranking
-    top_k_nodes = [node for node, score in node_scores[:settings.RERANK_TOP_K]]
-    
-    # Create a response synthesizer
-    response_synthesizer = get_response_synthesizer()
-    
-    # Generate the final answer using the top K chunks
-    response = response_synthesizer.synthesize(query, nodes=top_k_nodes)
-    
-    # Extract source file names from top K chunks
-    source_file_names = []
-    if top_k_nodes:
-        for node_with_score in top_k_nodes:
-            metadata = node_with_score.node.metadata
-            if metadata and isinstance(metadata, dict):
-                file_name = metadata.get("file_name") or metadata.get("filename") or metadata.get("source")
-                if file_name:
-                    source_file_names.append(file_name)
-    
-    # Filter out duplicates while preserving order
-    seen = set()
-    unique_sources = []
-    for s in source_file_names:
-        if s and s not in seen:
-            seen.add(s)
-            unique_sources.append(s)
-    
-    logger.info(f"Extracted sources after reranking: {unique_sources}")
+    def query(self, query: str) -> Dict:
+        """
+        Retrieve relevant chunks, rerank, synthesize and return an answer.
 
-    return {"answer": str(response),
-            "sources": unique_sources}
+        Returns:
+            {"answer": str, "sources": List[str]}
+        """
+        logger.info(f"RAGQueryTool.query | query={query!r}")
+
+        nodes = self._retriever.retrieve(query)
+        if not nodes:
+            logger.warning("RAGQueryTool: no nodes retrieved.")
+            return {"answer": "No relevant context found.", "sources": []}
+
+        # Cross-encoder reranking
+        pairs = [(query, node.node.get_content()) for node in nodes]
+        logger.info(f"Reranking {len(nodes)} chunks...")
+        scores = self._rerank_model.predict(pairs)
+
+        ranked = sorted(zip(nodes, scores), key=lambda x: x[1], reverse=True)
+        top_nodes = [node for node, _ in ranked[: self._settings.RERANK_TOP_K]]
+
+        # Synthesize answer
+        response = self._synthesizer.synthesize(query, nodes=top_nodes)
+
+        # Deduplicated source list
+        seen: set = set()
+        sources: List[str] = []
+        for node in top_nodes:
+            meta = node.node.metadata or {}
+            fname = meta.get("file_name") or meta.get("filename") or meta.get("source")
+            if fname and fname not in seen:
+                seen.add(fname)
+                sources.append(fname)
+
+        logger.info(f"RAGQueryTool.query complete | sources={sources}")
+        return {"answer": str(response), "sources": sources}
 
 
-# For direct testing, uncomment the code below and comment out @tool.
-# When using CrewAI, uncomment @tool and comment out the test code.
+# ---------------------------------------------------------------------------
+# Module-level singleton accessor
+# ---------------------------------------------------------------------------
 
-# output = rag_query_tool(query="Explain SHAP")
-# print(output)
-# print(output["answer"])
-# print(output["source_files"])
+_instance: RAGQueryTool | None = None
+
+
+def get_rag_tool() -> RAGQueryTool:
+    """Return the module-level RAGQueryTool singleton, creating it on first call."""
+    global _instance
+    if _instance is None:
+        _instance = RAGQueryTool()
+    return _instance

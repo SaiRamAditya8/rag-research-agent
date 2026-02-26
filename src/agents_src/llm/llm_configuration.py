@@ -1,19 +1,23 @@
-# LLM configuration mapping agent names to LLMs
+# LLM configuration — model names are bare Groq model IDs (no "groq/" prefix).
 LLM_CONFIG = {
-    "Check Intent Agent": {
-        "model": "groq/llama-3.3-70b-versatile",
+    "default": {
+        "model": "llama-3.3-70b-versatile",
         "temperature": 0.0,
     },
-    "Question Answer Agent": {
-        "model": "groq/llama-3.3-70b-versatile",
+    "Intent Agent": {
+        "model": "llama-3.3-70b-versatile",
+        "temperature": 0.0,
+    },
+    "QA Agent": {
+        "model": "llama-3.3-70b-versatile",
         "temperature": 0.0,
     },
     "ChitChat Agent": {
-        "model": "groq/llama-3.3-70b-versatile",
+        "model": "llama-3.3-70b-versatile",
         "temperature": 0.7,
     },
     "Memory Assistant": {
-        "model": "groq/llama-3.3-70b-versatile",
+        "model": "llama-3.3-70b-versatile",
         "temperature": 0.1,
-    }
+    },
 }
