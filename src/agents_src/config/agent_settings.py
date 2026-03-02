@@ -6,12 +6,10 @@ load_dotenv()
 
 
 class AgentSettings(BaseSettings):
-    GROQ_API_KEY: str
+    OPENAI_API_KEY: str
     DOCUMENTS_DIR: str
     VECTOR_STORE_DIR: str
     COLLECTION_NAME: str
-    MODEL_NAME: str
-    MODEL_TEMPERATURE: float
 
     # RAG chunking
     CHUNK_SIZE: int = 512
