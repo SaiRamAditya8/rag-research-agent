@@ -28,25 +28,30 @@ Context:
 Determine whether research papers need to be fetched and/or whether a question needs to be answered using RAG.
 Do NOT answer the user's question. Only analyze and decide intent.
 
-Step 1: Normalize User Query Using Chat History
-- Rewrite the latest user query into a fully self-contained, explicit question or topic.
-- Resolve references such as: "it", "this", "that", "they"
-- Resolve vague follow-ups like "Can you explain it?" or "What about its limitations?"
-- Use chat history to infer the subject if the user query is ambiguous.
-- Remove all fetch-related phrases like: "fetch", "download", "get the paper", "find papers"
-- The final request must contain ONLY the coherent question or topic.
-Examples:
-  "Can you explain it?" -> "Explain the transformer attention mechanism"
-  "Fetch papers and explain SHAP" -> "Explain SHAP explanations"
+Step 1: Determine Intent Flags (work from the RAW message — before any normalization)
+- Set fetch = true if the raw message contains any of: fetch, download, find papers, search for papers, get the paper, pull papers.
+  Even if the rest of the message has typos, fetch = true whenever one of these words is clearly present.
+- Set use_rag = true ONLY if the raw message contains an explicit question or request for explanation IN ADDITION to (or instead of) a fetch.
+  DO NOT set use_rag = true for a pure fetch request where the user only asked to get/find/download a paper with no follow-up question.
+- use_rag = true examples: "fetch and explain SHAP", "what is attention?", "how does RLHF work", "fetch LoRA and summarize it"
+- use_rag = false examples: "fetch the paper X", "get me papers on X", "download attention is all you need", "find papers on transformers"
+- Chitchat (use_rag = false, fetch = false):
+    - Greetings/small talk: "Hi", "Hello", "How are you?", "What's up?", "Thanks"
+    - Questions about the assistant itself: "What model are you?", "Who made you?", "What can you do?", "Are you GPT?"
 
-Step 2: Determine Intent Flags
-- Set fetch = true if user explicitly asks to fetch/download/find/search for papers
-- Set use_rag = true if the NORMALIZED request is a KNOWLEDGE-SEEKING question (not chitchat/greetings)
-- Knowledge-seeking: "Explain X", "What is Y", "How does Z work", "Compare A and B"
-- Chitchat (use_rag = false): "How are you?", "Hi", "Hello", "What's up?"
-- Even if fetch=true, if there is a knowledge-seeking question part, use_rag should be true
-- request must contain ONLY the knowledge-seeking question part
-- If purely chitchat, set use_rag = false and request = original message
+Step 2: Normalize the User Query
+- Rewrite the user message into a fully self-contained, explicit question or topic.
+- Resolve references: "it", "this", "that", "they" — use chat history to infer the subject.
+- Resolve vague follow-ups: "Can you explain it?" → "Explain the transformer attention mechanism"
+- REMOVE all fetch-related phrases (fetch, download, get the paper, find papers) from the normalized text.
+- The result (request) must contain ONLY the coherent question or topic — no fetch verbs.
+- CRITICAL: If the message is a pure fetch with no question, do NOT invent a question. Set request = the paper title or topic only.
+Examples:
+  "Can you explain it?" → "Explain the transformer attention mechanism"
+  "Fetch papers and explain SHAP" → "Explain SHAP explanations"
+  "fetch the paper attention si you ned" → "Attention Is All You Need"
+  "get me papers on transformers" → "transformers"
+- If purely chitchat, set request = original message.
 
 Step 3: Create Query and Category Lists (only if fetch = true)
 - If fetch = true, generate 1-5 short search queries (maximum 10 words each).

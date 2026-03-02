@@ -2,14 +2,31 @@ import logging
 from typing import Dict, List
 
 import chromadb
-from llama_index.core import VectorStoreIndex, StorageContext, Settings, get_response_synthesizer
+from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.vector_stores.chroma import ChromaVectorStore
-from llama_index.llms.groq import Groq
 
 from src.agents_src.config.agent_settings import AgentSettings
+from src.agents_src.llm.client import LLMClient
 from src.agents_src.llm.models import embed_model, rerank_model
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Synthesis prompts
+# ---------------------------------------------------------------------------
+
+_SYNTHESIS_SYSTEM = (
+    "You are a precise research assistant. "
+    "Answer questions strictly based on the provided research context. "
+    "If the context does not contain enough information to answer the question, say so clearly. "
+    "Do not hallucinate or add information beyond what is in the context."
+)
+
+_SYNTHESIS_USER = (
+    "Answer the following question using ONLY the research context below.\n\n"
+    "Context:\n{context}\n\n"
+    "Question: {query}"
+)
 
 
 class RAGQueryTool:
@@ -17,24 +34,18 @@ class RAGQueryTool:
     Singleton RAG query tool.
 
     ChromaDB client, LlamaIndex index, and retriever are initialised ONCE at
-    construction time and reused across all calls.  New documents added by
-    paper_fetcher (which shares the same PersistentClient path) are visible
-    automatically because the underlying ChromaDB collection is live.
+    construction time and reused across all calls.  New documents ingested by
+    paper_fetcher are visible immediately (shared PersistentClient path).
+
+    Synthesis is performed by LLMClient (gpt-4o), keeping all LLM calls in
+    one place and making the provider trivially swappable.
     """
 
     def __init__(self):
         settings = AgentSettings()
-
-        # Configure the global LlamaIndex LLM once
-        Settings.llm = Groq(
-            model=settings.MODEL_NAME,
-            temperature=settings.MODEL_TEMPERATURE,
-            api_key=settings.GROQ_API_KEY,
-        )
-        Settings.embed_model = embed_model
-
         self._settings = settings
         self._rerank_model = rerank_model
+        self._llm = LLMClient()
 
         db = chromadb.PersistentClient(path=settings.VECTOR_STORE_DIR)
         chroma_collection = db.get_or_create_collection(settings.COLLECTION_NAME)
@@ -49,7 +60,6 @@ class RAGQueryTool:
         self._retriever = self._index.as_retriever(
             similarity_top_k=settings.RETRIEVAL_TOP_K
         )
-        self._synthesizer = get_response_synthesizer()
 
         logger.info(
             f"RAGQueryTool initialised | collection={settings.COLLECTION_NAME} "
@@ -58,7 +68,7 @@ class RAGQueryTool:
 
     def query(self, query: str) -> Dict:
         """
-        Retrieve relevant chunks, rerank, synthesize and return an answer.
+        Retrieve relevant chunks, rerank, synthesize via LLMClient, and return an answer.
 
         Returns:
             {"answer": str, "sources": List[str]}
@@ -78,8 +88,15 @@ class RAGQueryTool:
         ranked = sorted(zip(nodes, scores), key=lambda x: x[1], reverse=True)
         top_nodes = [node for node, _ in ranked[: self._settings.RERANK_TOP_K]]
 
-        # Synthesize answer
-        response = self._synthesizer.synthesize(query, nodes=top_nodes)
+        # Synthesize answer via LLMClient (gpt-4o)
+        context = "\n\n---\n\n".join(node.node.get_content() for node in top_nodes)
+        answer = self._llm.complete(
+            messages=[
+                {"role": "system", "content": _SYNTHESIS_SYSTEM},
+                {"role": "user", "content": _SYNTHESIS_USER.format(context=context, query=query)},
+            ],
+            agent_name="QA Agent",
+        )
 
         # Deduplicated source list
         seen: set = set()
@@ -92,7 +109,7 @@ class RAGQueryTool:
                 sources.append(fname)
 
         logger.info(f"RAGQueryTool.query complete | sources={sources}")
-        return {"answer": str(response), "sources": sources}
+        return {"answer": answer, "sources": sources}
 
 
 # ---------------------------------------------------------------------------

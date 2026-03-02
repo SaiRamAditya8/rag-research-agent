@@ -26,8 +26,7 @@ rag-res-agent/
 │   │   ├── config/
 │   │   │   └── agent_settings.py       # Centralised settings (env-backed via pydantic-settings)
 │   │   ├── llm/
-│   │   │   ├── client.py               # LLMClient singleton (LlamaIndex/Groq)
-│   │   │   ├── llm_configuration.py    # Per-pipeline model + temperature config
+│   │   │   ├── client.py               # LLMClient singleton + LLM_CONFIG (model names/temps)
 │   │   │   └── models.py               # Shared embed + rerank model singletons
 │   │   ├── pipeline/
 │   │   │   ├── intent.py               # IntentPipeline — classifies query intent
@@ -66,7 +65,7 @@ rag-res-agent/
 - `data/` is gitignored and should be bind-mounted in Docker so it persists across restarts.
 - `scripts/seed_vectorstore.py` is run manually (or optionally on startup via `start.sh`) to load a static document corpus before first use.
 - All tunable RAG constants live in `AgentSettings` — never hardcoded in tools/utils.
-- All LLM model names and temperatures live in `llm_configuration.py` — never hardcoded in pipeline code.
+- All LLM model names and temperatures live in `LLM_CONFIG` inside `llm/client.py` — never hardcoded in pipeline code.
 
 ---
 
@@ -132,24 +131,27 @@ graph TD
 
 The pipeline layer replaces the previous CrewAI agent/task/crew abstraction. Each pipeline is a plain Python class with a single `run()` method. All pipelines are module-level singletons instantiated once in `services/chat.py`.
 
-| Pipeline | Model Temp | LLM Call | Role |
+| Pipeline | Model | LLM Calls | Role |
 | :--- | :--- | :--- | :--- |
-| `IntentPipeline` | 0.0 | 1 (JSON mode) | Classifies query → `IntentOutput` |
-| `QAPipeline` | — | 0 (no LLM call) | Calls RAGQueryTool, builds response in Python |
-| `ChitChatPipeline` | 0.7 | 1 | Handles greetings, small talk, fetch confirmations |
+| `IntentPipeline` | gpt-4o-mini (temp 0.0) | 1 (JSON mode) | Classifies query → `IntentOutput` |
+| `QAPipeline` | — | 0 | Calls RAGQueryTool, builds response in Python |
+| `ChitChatPipeline` | gpt-4o-mini (temp 0.7) | 1 | Handles greetings, small talk, fetch confirmations |
+
+**RAGQueryTool synthesis**: gpt-4o (temp 0.0) via `LLMClient` — this is the one high-quality call per RAG turn.
 
 **LLM Client** (`llm/client.py`):
-- Singleton wrapper around LlamaIndex's `Groq` LLM integration.
-- Caches one `Groq` instance per agent name (config looked up from `llm_configuration.py`).
-- Accepts `json_mode=True` to enforce JSON output (Groq JSON mode).
-- To swap LLM providers: change only the import and instantiation in `_get_llm()` and update model names in `llm_configuration.py`.
+- Singleton wrapper around LlamaIndex's `OpenAI` LLM integration.
+- Contains `LLM_CONFIG` dict — model names and temperatures live here, not in a separate file.
+- Caches one `OpenAI` instance per agent name.
+- Accepts `json_mode=True` to enforce JSON output via `response_format`.
+- To swap providers: change only the import and `_get_llm()` instantiation; update model names in `LLM_CONFIG`.
 
 **Intent Pipeline query generation rules** (`pipeline/intent.py`):
 - **TITLE LOOKUP** (user asks for a specific paper by name): return the exact title as a **single query** — no expansion.
 - **TOPIC SEARCH** (user asks for papers on a subject): generate **2–5 diverse queries** covering different facets.
 
 ### D. Data Ingestion & Retrieval Layer
-- **Technology**: LlamaIndex, ChromaDB, PyMuPDF, HuggingFace Transformers
+- **Technology**: LlamaIndex, ChromaDB, OpenAI Embeddings, PyMuPDF, sentence-transformers (CrossEncoder)
 - **Location**: `src/agents_src/utils/paper_fetcher.py` & `src/agents_src/tools/rag_qa_tool.py`
 
 #### RAGQueryTool (`tools/rag_qa_tool.py`)
@@ -157,9 +159,9 @@ The pipeline layer replaces the previous CrewAI agent/task/crew abstraction. Eac
 A singleton class. ChromaDB client, LlamaIndex index, and retriever are initialised **once** at construction time and reused across all requests. New documents ingested by `paper_fetcher` are visible immediately (shared PersistentClient path).
 
 Query flow:
-1. Vector search → top `RETRIEVAL_TOP_K` (15) chunks.
-2. Cross-encoder rerank → keep top `RERANK_TOP_K` (5) chunks.
-3. Synthesize answer with LlamaIndex `ResponseSynthesizer`.
+1. Vector search → top `RETRIEVAL_TOP_K` (15) chunks using `text-embedding-3-small`.
+2. Cross-encoder rerank (`BAAI/bge-reranker-large`, local) → keep top `RERANK_TOP_K` (5) chunks.
+3. Synthesize answer via `LLMClient` (gpt-4o) with a grounded research prompt — no hallucination.
 
 #### Paper Fetching Pipeline (`utils/paper_fetcher.py`)
 
@@ -210,10 +212,10 @@ Query flow:
 5. **IntentPipeline** returns `IntentOutput {use_rag: true, fetch: false, request: "Explain the attention mechanism"}`.
 6. **Backend** routes to **QAPipeline**.
 7. **QAPipeline** calls `RAGQueryTool.query("Explain the attention mechanism")`:
-   - Vector search → top 15 chunks.
-   - Cross-encoder rerank → top 5 chunks.
-   - Generate answer with LlamaIndex `ResponseSynthesizer`.
-8. **QAPipeline** returns `AnswerStructure` (no additional LLM call).
+   - Vector search (text-embedding-3-small) → top 15 chunks.
+   - Cross-encoder rerank (BAAI/bge-reranker-large) → top 5 chunks.
+   - Synthesize answer via `LLMClient` (gpt-4o).
+8. **QAPipeline** returns `AnswerStructure` — this is the only LLM call in the QA path.
 9. **Backend** appends answer to `chat_buffer`, updates `chat_summary`.
 10. **Frontend** displays answer with sources.
 
@@ -272,8 +274,7 @@ Mount `./data` to persist runtime data across container restarts:
 
 | Variable | Required | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `GROQ_API_KEY` | Yes | — | Required for all LLM calls |
-| `MODEL_NAME` | No | `llama-3.3-70b-versatile` | Default Groq model (overridden per-pipeline in `llm_configuration.py`) |
+| `OPENAI_API_KEY` | Yes | — | Required for all LLM calls and embeddings |
 | `DOCUMENTS_DIR` | No | `/app/data/docs` | PDF storage path |
 | `VECTOR_STORE_DIR` | No | `/app/data/vector_store` | ChromaDB path |
 | `COLLECTION_NAME` | No | `research_papers` | ChromaDB collection name |
@@ -324,10 +325,10 @@ docker rmi rag-res-agent:latest
 
 | Component | Managed Service | Self-Hosted |
 | :--- | :--- | :--- |
-| LLM Inference | **Groq API** (Cloud, via LlamaIndex) | — |
-| Embeddings | — | **HuggingFace** (Local) |
+| LLM Inference | **OpenAI API** (Cloud, via LlamaIndex) | — |
+| Embeddings | **OpenAI API** — text-embedding-3-small | — |
+| Reranking | — | **BAAI/bge-reranker-large** (Local, sentence-transformers) |
 | Vector DB | — | **ChromaDB** (Local file-based) |
-| Reranking | — | **BAAI/bge-reranker-large** (Local) |
 | Frontend/API | — | **Streamlit/FastAPI** (Local) |
 
 ---
@@ -345,18 +346,20 @@ docker rmi rag-res-agent:latest
 
 ### 7.1 LLM Selection
 
-**Current**: Groq (llama-3.3-70B-versatile), accessed via LlamaIndex's `Groq` integration.
+**Current**: OpenAI, accessed via LlamaIndex's `OpenAI` integration.
+- **gpt-4o-mini** — intent classification, chitchat, memory summarisation (fast, cheap)
+- **gpt-4o** — RAG synthesis (best reasoning quality where it matters most)
 
-**Rationale**: Latency optimization. In a multi-step pipeline (Intent → Router → Tool → Response), latency compounds. Groq's LPU architecture minimises per-step delay. Using LlamaIndex's integration (rather than the raw SDK) means the LLM provider can be swapped by changing only `llm/client.py` and model names in `llm_configuration.py`.
+**Rationale**: Hybrid model approach balances cost and quality. gpt-4o-mini handles the high-frequency, structured tasks (intent JSON, memory) at minimal cost. gpt-4o is reserved for synthesis where answer quality directly affects the user experience. Using LlamaIndex's integration means the provider can be swapped by changing only the import and `_get_llm()` in `llm/client.py`, and updating `LLM_CONFIG` model names in the same file.
 
 **Risk Factors**:
-1. Rate limits more restrictive than OpenAI.
-2. Context window may constrain full paper analysis.
-3. Strict JSON schema output occasionally needs retry logic.
+1. All LLM calls and embeddings share one `OPENAI_API_KEY` — single point of failure.
+2. gpt-4o latency (~1–3s) is higher than Groq's LPU for the synthesis step.
+3. Cost scales with usage; monitor token spend on long research sessions.
 
 **Alternatives**:
-- ✅ **Hybrid Router/Analyzer**: Small/fast model (e.g., Llama-3-8B) for Intent classification; larger model (GPT-4o or Claude) for QA synthesis. Lower cost, better synthesis quality. Requires multiple API keys.
-- ❌ **Pure Local 8B models**: Insufficient instruction-following for reliable JSON schema output in Intent Pipeline.
+- ✅ **Anthropic claude-haiku + claude-sonnet**: Comparable quality split. Excellent instruction following. Change `llm/client.py` import to `llama_index.llms.anthropic`.
+- ✅ **Groq for intent/chitchat + OpenAI for synthesis**: Sub-100ms intent classification, quality synthesis. Requires two API keys.
 
 ---
 
@@ -393,13 +396,19 @@ docker rmi rag-res-agent:latest
 
 ### 7.4 Embedding Model
 
-**Current**: HuggingFace Embeddings (Local Singleton)
+**Current**: OpenAI `text-embedding-3-small` (via LlamaIndex's `OpenAIEmbedding`)
 
-**Analysis**: Good for privacy and cost. Blocks the main thread during large PDF ingestion on CPU-only containers.
+**Rationale**: Strong retrieval quality, fast API response, no local GPU/RAM requirement for embeddings. Reuses the existing `OPENAI_API_KEY`. Switching to `text-embedding-3-large` requires only a one-line change in `llm/models.py` and a full re-index of the vector store.
+
+**Risk Factors**:
+1. Embedding cost is per-token — large ingestion sessions (many PDFs) add up.
+2. Re-indexing required if the model is ever changed (embeddings are not cross-compatible).
+3. Ingestion still blocks the main thread — embedding via API adds network latency on top of local compute.
 
 **Alternatives**:
-- ✅ **Async Ingestion Worker**: Offload embedding to a separate process/service. Chat remains responsive. Adds deployment complexity.
-- ✅ **OpenAI `text-embedding-3-small`**: Fast and cheap. Vendor lock-in; switching models requires full re-indexing.
+- ✅ **Async Ingestion Worker**: Offload PDF download + embedding to a background task (Celery / asyncio). Chat remains responsive during ingestion. Adds deployment complexity.
+- ✅ **`text-embedding-3-large`**: Higher quality at ~5× the cost. Worth it for dense technical corpora.
+- ✅ **Voyage AI `voyage-3`**: Best-in-class retrieval quality benchmarks. Requires a separate API key.
 
 ---
 
