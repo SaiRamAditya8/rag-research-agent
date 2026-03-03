@@ -10,6 +10,7 @@ class AgentSettings(BaseSettings):
     DOCUMENTS_DIR: str
     VECTOR_STORE_DIR: str
     COLLECTION_NAME: str
+    PROJECTS_DATA_PATH: str = "data/projects.json"
 
     # RAG chunking
     CHUNK_SIZE: int = 512

@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import List
+from typing import List, Optional
 
 from src.agents_src.llm.client import LLMClient
 from src.agents_src.schemas import AnswerStructure, IntentOutput
@@ -60,9 +60,13 @@ class AnswerPipeline:
         chat_summary: str,
         fetch: bool,
         papers: List[str],
+        project_papers: Optional[List[str]] = None,
     ) -> AnswerStructure:
         if intent.use_rag:
-            return self._rag_answer(intent.request, user_query, chat_history, chat_summary, fetch, papers)
+            return self._rag_answer(
+                intent.request, user_query, chat_history, chat_summary,
+                fetch, papers, intent.paper_filter or [], project_papers,
+            )
         else:
             return self._chitchat_answer(user_query, chat_history, chat_summary, fetch, papers)
 
@@ -78,10 +82,19 @@ class AnswerPipeline:
         chat_summary: str,
         fetch: bool,
         papers: List[str],
+        paper_filter: List[str],
+        project_papers: Optional[List[str]],
     ) -> AnswerStructure:
-        logger.info(f"AnswerPipeline._rag_answer | request={request!r} fetch={fetch}")
+        logger.info(
+            f"AnswerPipeline._rag_answer | request={request!r} "
+            f"paper_filter={paper_filter} project_papers={project_papers}"
+        )
 
-        rag_result = self._rag.query(request)
+        rag_result = self._rag.query(
+            request,
+            paper_filter=paper_filter or None,
+            project_papers=project_papers or None,
+        )
         answer: str = rag_result.get("answer", "")
         sources: List[str] = rag_result.get("sources", [])
 

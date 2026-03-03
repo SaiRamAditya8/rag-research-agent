@@ -25,6 +25,9 @@ Context:
 - Recent history (last 5 turns): {chat_history}
 - Conversation Summary: {chat_summary}
 
+Papers currently available in this project:
+{paper_list}
+
 Determine whether research papers need to be fetched and/or whether a question needs to be answered using RAG.
 Do NOT answer the user's question. Only analyze and decide intent.
 
@@ -39,9 +42,16 @@ Step 1: Determine Intent Flags (work from the RAW message — before any normali
     - Greetings/small talk: "Hi", "Hello", "How are you?", "What's up?", "Thanks"
     - Questions about the assistant itself: "What model are you?", "Who made you?", "What can you do?", "Are you GPT?"
 
-Step 2: Normalize the User Query
+Step 2: Identify paper_filter (use the available papers list above)
+- If the user refers to specific papers by name, pronoun, or position ("these papers", "the attention paper",
+  "the first one you fetched", "that BERT paper"), identify their exact titles from the available papers list.
+- If the user refers to ALL available papers ("summarize all papers", "explain these"), list every available title.
+- If the user is asking a general question not tied to specific papers, set paper_filter = [].
+- paper_filter should only contain titles from the available papers list above.
+
+Step 3: Normalize the User Query
 - Rewrite the user message into a fully self-contained, explicit question or topic.
-- Resolve references: "it", "this", "that", "they" — use chat history to infer the subject.
+- Resolve references: "it", "this", "that", "they" — use chat history AND the available papers list to infer the subject.
 - Resolve vague follow-ups: "Can you explain it?" → "Explain the transformer attention mechanism"
 - REMOVE all fetch-related phrases (fetch, download, get the paper, find papers) from the normalized text.
 - The result (request) must contain ONLY the coherent question or topic — no fetch verbs.
@@ -51,9 +61,10 @@ Examples:
   "Fetch papers and explain SHAP" → "Explain SHAP explanations"
   "fetch the paper attention si you ned" → "Attention Is All You Need"
   "get me papers on transformers" → "transformers"
+  "explain these papers" (with available papers: ["Attention Is All You Need", "BERT"]) → "Explain Attention Is All You Need and BERT"
 - If purely chitchat, set request = original message.
 
-Step 3: Create Query and Category Lists (only if fetch = true)
+Step 4: Create Query and Category Lists (only if fetch = true)
 - If fetch = true, generate 1-5 short search queries (maximum 10 words each).
 - CRITICAL: The FIRST query MUST be the specific paper title or exact topic the user named.
   Remove any fetch-related words from it.
@@ -68,31 +79,35 @@ Step 3: Create Query and Category Lists (only if fetch = true)
 - Generate a separate list of arXiv categories if reasonably confident, else use empty list.
 - If fetch = false, return empty lists for both queries and categories.
 
-Step 4: Return a JSON object (and nothing else) with this exact structure:
+Step 5: Return a JSON object (and nothing else) with this exact structure:
 {{
   "fetch": <boolean>,
   "use_rag": <boolean>,
   "queries": ["query1", "query2"],
   "categories": ["cs.LG"],
-  "request": "normalized self-contained question"
+  "request": "normalized self-contained question",
+  "paper_filter": ["Exact Title 1", "Exact Title 2"]
 }}
 
 Rules:
 - If fetch is false, queries and categories must be empty lists.
 - request must NOT contain fetch-related phrases and must be self-contained.
+- paper_filter must contain ONLY titles that appear verbatim in the available papers list.
+- If no specific papers are referenced, paper_filter must be an empty list [].
 """
 
 
 class IntentPipeline:
     """
-    Classifies user intent via a single direct Groq API call.
+    Classifies user intent via a single LLM call.
 
     Returns an IntentOutput Pydantic model with:
-      fetch     — whether to fetch papers
-      use_rag   — whether to run RAG
-      queries   — arXiv search queries (populated only when fetch=True)
-      categories — arXiv category hints (populated only when fetch=True)
-      request   — normalized, self-contained question for downstream steps
+      fetch        — whether to fetch papers
+      use_rag      — whether to run RAG
+      queries      — arXiv search queries (populated only when fetch=True)
+      categories   — arXiv category hints (populated only when fetch=True)
+      request      — normalized, self-contained question for downstream steps
+      paper_filter — titles of specific papers the user referred to (for filtered RAG)
     """
 
     def __init__(self):
@@ -103,14 +118,21 @@ class IntentPipeline:
         user_query: str,
         chat_history: List[dict],
         chat_summary: str,
+        fetched_papers: List[dict] = None,
     ) -> IntentOutput:
         history_str = json.dumps(chat_history, ensure_ascii=False) if chat_history else "[]"
         summary_str = chat_summary.strip() if chat_summary else "No summary yet."
+
+        if fetched_papers:
+            paper_list = "\n".join(f"- {p['title']}" for p in fetched_papers)
+        else:
+            paper_list = "None yet."
 
         user_prompt = _USER_PROMPT_TEMPLATE.format(
             user_query=user_query,
             chat_history=history_str,
             chat_summary=summary_str,
+            paper_list=paper_list,
             curly_example="{{ content }}",
         )
 
@@ -124,7 +146,7 @@ class IntentPipeline:
             intent = IntentOutput.model_validate_json(raw)
             logger.info(
                 f"IntentPipeline | fetch={intent.fetch} use_rag={intent.use_rag} "
-                f"queries={intent.queries} request={intent.request!r}"
+                f"paper_filter={intent.paper_filter} queries={intent.queries} request={intent.request!r}"
             )
             return intent
         except Exception as e:
@@ -135,4 +157,5 @@ class IntentPipeline:
                 queries=[],
                 categories=[],
                 request=user_query,
+                paper_filter=[],
             )

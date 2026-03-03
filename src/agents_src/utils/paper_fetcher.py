@@ -1,4 +1,6 @@
 import logging
+import re
+import tempfile
 import time
 from difflib import SequenceMatcher
 from typing import List, Optional
@@ -224,13 +226,22 @@ def _search_arxiv_broad(query_text: str, category: str = "", max_results: int = 
 # Vector store ingestion
 # ---------------------------------------------------------------------------
 
-def build_vector_store_from_documents(pdf_paths: Optional[List[str]] = None) -> int:
+def build_vector_store_from_documents(
+    pdf_paths: Optional[List[str]] = None,
+    paper_titles: Optional[List[str]] = None,
+) -> int:
     """
     Build (or extend) the persistent Chroma vector store.
 
     If `pdf_paths` is provided those PDFs are read directly.
     Otherwise falls back to reading from settings.DOCUMENTS_DIR.
     Temporary PDFs are deleted after ingestion.
+
+    `paper_titles` is a parallel list to `pdf_paths` — title at index i is stored
+    as `paper_title` metadata on every chunk from pdf_paths[i].
+
+    Chunks are global (no project_id tag). Projects track which papers they own
+    via their fetched_papers list; RAG filters by paper_title at query time.
     """
     logger.info("Starting vector store ingestion process.")
     try:
@@ -240,7 +251,7 @@ def build_vector_store_from_documents(pdf_paths: Optional[List[str]] = None) -> 
         documents = []
         if pdf_paths:
             logger.info(f"Loading {len(pdf_paths)} PDF files.")
-            for p in pdf_paths:
+            for i, p in enumerate(pdf_paths):
                 p = os.path.expanduser(p)
                 if not os.path.isfile(p):
                     logger.warning(f"PDF path not found: {p}")
@@ -249,10 +260,13 @@ def build_vector_store_from_documents(pdf_paths: Optional[List[str]] = None) -> 
                 if not text.strip():
                     logger.warning(f"No text extracted from: {p}")
                     continue
-                documents.append(Document(
-                    text=text,
-                    metadata={"source": p, "filename": os.path.basename(p)},
-                ))
+                title = (paper_titles[i] if paper_titles and i < len(paper_titles) else os.path.basename(p))
+                metadata = {
+                    "source": p,
+                    "filename": os.path.basename(p),
+                    "paper_title": title,
+                }
+                documents.append(Document(text=text, metadata=metadata))
         else:
             from llama_index.core import SimpleDirectoryReader
             docs_dir_path = settings.DOCUMENTS_DIR
@@ -465,21 +479,151 @@ def fetch_papers_and_ingest(
     Path(docs_dir).mkdir(parents=True, exist_ok=True)
 
     pdf_paths = []
+    paper_titles = []
     response = []
 
     for cand in selected:
         pdf_path = _download_pdf(cand, docs_dir)
         if pdf_path:
             pdf_paths.append(pdf_path)
+            paper_titles.append(cand["title"])
             response.append({"title": cand["title"], "url": cand["pdf_url"]})
 
     if not pdf_paths:
         logger.error("All PDF downloads failed.")
         return None
 
-    build_vector_store_from_documents(pdf_paths=pdf_paths)
+    build_vector_store_from_documents(pdf_paths=pdf_paths, paper_titles=paper_titles)
     logger.info(f"Ingested papers: {[r['title'] for r in response]}")
     return response
+
+
+# ---------------------------------------------------------------------------
+# Direct-ingest helpers (arXiv ID, DOI, uploaded PDF, delete)
+# ---------------------------------------------------------------------------
+
+_ARXIV_ID_RE = re.compile(
+    r"(?:arxiv\.org/(?:abs|pdf)/)?(\d{4}\.\d{4,5}(?:v\d+)?)", re.IGNORECASE
+)
+
+
+def _parse_arxiv_id(text: str) -> Optional[str]:
+    m = _ARXIV_ID_RE.search(text.strip())
+    return m.group(1) if m else None
+
+
+def ingest_arxiv_paper(arxiv_input: str) -> Optional[dict]:
+    """
+    Fetch a single paper by arXiv ID or URL and ingest it into the global vector store.
+    Returns {"title": str, "url": str} on success, None on failure.
+    """
+    arxiv_id = _parse_arxiv_id(arxiv_input)
+    if not arxiv_id:
+        logger.warning(f"Could not parse arXiv ID from: {arxiv_input!r}")
+        return None
+
+    try:
+        search = arxiv.Search(id_list=[arxiv_id], max_results=1)
+        results = list(search.results())
+    except Exception as e:
+        logger.warning(f"arXiv lookup failed for ID '{arxiv_id}': {e}")
+        return None
+
+    if not results:
+        logger.warning(f"No arXiv paper found for ID '{arxiv_id}'")
+        return None
+
+    paper = results[0]
+    cand = {"title": paper.title, "pdf_url": paper.pdf_url, "source": "arxiv", "arxiv_obj": paper}
+    docs_dir = settings.DOCUMENTS_DIR
+    Path(docs_dir).mkdir(parents=True, exist_ok=True)
+    pdf_path = _download_pdf(cand, docs_dir)
+    if not pdf_path:
+        return None
+
+    build_vector_store_from_documents(pdf_paths=[pdf_path], paper_titles=[paper.title])
+    logger.info(f"Ingested arXiv paper: {paper.title}")
+    return {"title": paper.title, "url": paper.pdf_url}
+
+
+def ingest_doi_paper(doi: str) -> Optional[dict]:
+    """
+    Resolve a DOI via Semantic Scholar, download the open-access PDF, and ingest it.
+    Returns {"title": str, "url": str} on success, None on failure.
+    """
+    doi = doi.strip()
+    for prefix in ("https://doi.org/", "http://doi.org/", "doi.org/"):
+        if doi.lower().startswith(prefix):
+            doi = doi[len(prefix):]
+            break
+
+    try:
+        resp = requests.get(
+            f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}",
+            params={"fields": "title,openAccessPdf,externalIds"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        logger.warning(f"Semantic Scholar DOI lookup failed for '{doi}': {e}")
+        return None
+
+    title = data.get("title", "")
+    pdf_url = None
+    if data.get("openAccessPdf") and data["openAccessPdf"].get("url"):
+        pdf_url = data["openAccessPdf"]["url"]
+    elif data.get("externalIds", {}).get("ArXiv"):
+        pdf_url = f"https://arxiv.org/pdf/{data['externalIds']['ArXiv']}.pdf"
+
+    if not pdf_url:
+        logger.warning(f"No open-access PDF found for DOI '{doi}'")
+        return None
+
+    cand = {"title": title, "pdf_url": pdf_url, "source": "doi", "arxiv_obj": None}
+    docs_dir = settings.DOCUMENTS_DIR
+    Path(docs_dir).mkdir(parents=True, exist_ok=True)
+    pdf_path = _download_pdf(cand, docs_dir)
+    if not pdf_path:
+        return None
+
+    build_vector_store_from_documents(pdf_paths=[pdf_path], paper_titles=[title])
+    logger.info(f"Ingested DOI paper: {title}")
+    return {"title": title, "url": pdf_url}
+
+
+def ingest_uploaded_pdf(file_content: bytes, filename: str) -> Optional[dict]:
+    """
+    Ingest a user-uploaded PDF into the global vector store.
+    Returns {"title": str, "url": ""} on success, None on failure.
+    """
+    title = os.path.splitext(filename)[0]
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(file_content)
+            tmp_path = tmp.name
+        # build_vector_store_from_documents deletes temp files in its finally block
+        build_vector_store_from_documents(pdf_paths=[tmp_path], paper_titles=[title])
+        logger.info(f"Ingested uploaded PDF: {filename}")
+        return {"title": title, "url": ""}
+    except Exception as e:
+        logger.error(f"Failed to ingest uploaded PDF '{filename}': {e}")
+        return None
+
+
+def delete_paper_from_store(paper_title: str) -> None:
+    """
+    Delete all vector store chunks for a paper (global — title-keyed, no project tag).
+    The caller is responsible for ensuring no other project still references this title
+    before calling this function.
+    """
+    try:
+        db = chromadb.PersistentClient(path=settings.VECTOR_STORE_DIR)
+        collection = db.get_or_create_collection(name=settings.COLLECTION_NAME)
+        collection.delete(where={"paper_title": {"$eq": paper_title}})
+        logger.info(f"Deleted vector store chunks for '{paper_title}'")
+    except Exception as e:
+        logger.error(f"delete_paper_from_store failed: {e}")
 
 
 if __name__ == "__main__":

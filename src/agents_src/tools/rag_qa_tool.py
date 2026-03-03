@@ -1,8 +1,13 @@
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import chromadb
 from llama_index.core import VectorStoreIndex, StorageContext
+from llama_index.core.vector_stores.types import (
+    MetadataFilter,
+    MetadataFilters,
+    FilterOperator,
+)
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
 from src.agents_src.config.agent_settings import AgentSettings
@@ -33,12 +38,13 @@ class RAGQueryTool:
     """
     Singleton RAG query tool.
 
-    ChromaDB client, LlamaIndex index, and retriever are initialised ONCE at
-    construction time and reused across all calls.  New documents ingested by
-    paper_fetcher are visible immediately (shared PersistentClient path).
+    ChromaDB client, LlamaIndex index, and a global (unfiltered) retriever are
+    initialised ONCE at construction time and reused across all calls.
 
-    Synthesis is performed by LLMClient (gpt-4o), keeping all LLM calls in
-    one place and making the provider trivially swappable.
+    Filtered retrieval (by paper_title or project_id) creates a lightweight
+    per-query retriever on top of the same shared index — no re-initialisation.
+
+    Synthesis is performed by LLMClient (gpt-4o).
     """
 
     def __init__(self):
@@ -63,19 +69,61 @@ class RAGQueryTool:
 
         logger.info(
             f"RAGQueryTool initialised | collection={settings.COLLECTION_NAME} "
-            f"top_k={settings.RETRIEVAL_TOP_K} rerank_k={settings.RERANK_TOP_K}"
+            f"top_k={settings.RETRIEVAL_TOP_K} rerank_k={settings.RERANK_TOP_K} "
+            f"(global DB, paper-title-scoped at query time)"
         )
 
-    def query(self, query: str) -> Dict:
+    def _build_retriever(
+        self,
+        paper_filter: Optional[List[str]],
+        project_papers: Optional[List[str]],
+    ):
         """
-        Retrieve relevant chunks, rerank, synthesize via LLMClient, and return an answer.
+        Return a retriever scoped by paper title.
+        Falls back to the global unfiltered retriever when no scope is given.
+
+        Priority: paper_filter (explicit selection) > project_papers (all project papers) > global
+        """
+        titles = paper_filter or project_papers
+        if not titles:
+            return self._retriever
+
+        f = MetadataFilter(
+            key="paper_title",
+            value=titles,
+            operator=FilterOperator.IN,
+        )
+        return self._index.as_retriever(
+            similarity_top_k=self._settings.RETRIEVAL_TOP_K,
+            filters=MetadataFilters(filters=[f]),
+        )
+
+    def query(
+        self,
+        query: str,
+        paper_filter: Optional[List[str]] = None,
+        project_papers: Optional[List[str]] = None,
+    ) -> Dict:
+        """
+        Retrieve relevant chunks, rerank, synthesize via LLMClient, return answer.
+
+        Args:
+            query: the question to answer
+            paper_filter: if set, restrict to these specific paper titles (user-specified)
+            project_papers: if set (and paper_filter is empty), restrict to all papers
+                            in the current project (by title)
 
         Returns:
             {"answer": str, "sources": List[str]}
         """
-        logger.info(f"RAGQueryTool.query | query={query!r}")
+        logger.info(
+            f"RAGQueryTool.query | query={query!r} "
+            f"paper_filter={paper_filter} project_papers={project_papers}"
+        )
 
-        nodes = self._retriever.retrieve(query)
+        retriever = self._build_retriever(paper_filter, project_papers)
+        nodes = retriever.retrieve(query)
+
         if not nodes:
             logger.warning("RAGQueryTool: no nodes retrieved.")
             return {"answer": "No relevant context found.", "sources": []}
@@ -98,15 +146,20 @@ class RAGQueryTool:
             agent_name="QA Agent",
         )
 
-        # Deduplicated source list
+        # Deduplicated source list — prefer paper_title, fall back to filename
         seen: set = set()
         sources: List[str] = []
         for node in top_nodes:
             meta = node.node.metadata or {}
-            fname = meta.get("file_name") or meta.get("filename") or meta.get("source")
-            if fname and fname not in seen:
-                seen.add(fname)
-                sources.append(fname)
+            label = (
+                meta.get("paper_title")
+                or meta.get("file_name")
+                or meta.get("filename")
+                or meta.get("source")
+            )
+            if label and label not in seen:
+                seen.add(label)
+                sources.append(label)
 
         logger.info(f"RAGQueryTool.query complete | sources={sources}")
         return {"answer": answer, "sources": sources}

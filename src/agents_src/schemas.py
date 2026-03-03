@@ -8,6 +8,7 @@ class IntentOutput(BaseModel):
     queries: List[str]
     categories: List[str]
     request: str
+    paper_filter: List[str] = Field(default_factory=list)
 
 
 class AnswerStructure(BaseModel):
