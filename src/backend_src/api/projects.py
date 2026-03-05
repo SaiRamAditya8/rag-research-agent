@@ -73,7 +73,19 @@ def get_project(project_id: str):
 def delete_project(project_id: str):
     if project_id not in project_store._projects:
         raise HTTPException(status_code=404, detail="Project not found")
+    # Collect paper titles before removing the project record
+    project = project_store.get_project(project_id)
+    paper_titles = [p["title"] for p in project.fetched_papers]
     project_store.delete_project(project_id)
+    # Delete chunks for papers no longer referenced by any remaining project
+    remaining_projects = project_store.list_projects()
+    for title in paper_titles:
+        still_referenced = any(
+            any(p["title"] == title for p in proj.fetched_papers)
+            for proj in remaining_projects
+        )
+        if not still_referenced:
+            delete_paper_from_store(title)
     return {"status": "deleted", "project_id": project_id}
 
 

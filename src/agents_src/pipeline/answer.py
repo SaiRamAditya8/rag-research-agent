@@ -93,7 +93,7 @@ class AnswerPipeline:
         rag_result = self._rag.query(
             request,
             paper_filter=paper_filter or None,
-            project_papers=project_papers or None,
+            project_papers=project_papers,
         )
         answer: str = rag_result.get("answer", "")
         sources: List[str] = rag_result.get("sources", [])

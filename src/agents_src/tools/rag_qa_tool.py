@@ -79,14 +79,24 @@ class RAGQueryTool:
         project_papers: Optional[List[str]],
     ):
         """
-        Return a retriever scoped by paper title.
-        Falls back to the global unfiltered retriever when no scope is given.
+        Return a retriever scoped by paper title, or None if the scope is empty.
 
         Priority: paper_filter (explicit selection) > project_papers (all project papers) > global
+        - If paper_filter is non-empty: filter to those specific papers.
+        - Else if project_papers is provided (even empty list): filter to project scope.
+          An empty project_papers means the project has no papers → returns None (no results).
+        - If project_papers is None: no project scope known → global retriever (should not
+          occur in normal chat flow; only happens for direct tool calls without a project).
         """
-        titles = paper_filter or project_papers
+        if paper_filter:
+            titles = paper_filter
+        elif project_papers is not None:
+            titles = project_papers
+        else:
+            return self._retriever  # no project scope — global (direct tool call only)
+
         if not titles:
-            return self._retriever
+            return None  # project exists but has no papers → signal empty result
 
         f = MetadataFilter(
             key="paper_title",
@@ -122,6 +132,10 @@ class RAGQueryTool:
         )
 
         retriever = self._build_retriever(paper_filter, project_papers)
+        if retriever is None:
+            logger.warning("RAGQueryTool: project has no papers — skipping retrieval.")
+            return {"answer": "This project has no papers yet. Add papers first to enable research queries.", "sources": []}
+
         nodes = retriever.retrieve(query)
 
         if not nodes:

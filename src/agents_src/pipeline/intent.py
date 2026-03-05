@@ -32,12 +32,20 @@ Determine whether research papers need to be fetched and/or whether a question n
 Do NOT answer the user's question. Only analyze and decide intent.
 
 Step 1: Determine Intent Flags (work from the RAW message — before any normalization)
-- Set fetch = true if the raw message contains any of: fetch, download, find papers, search for papers, get the paper, pull papers.
-  Even if the rest of the message has typos, fetch = true whenever one of these words is clearly present.
-- Set use_rag = true ONLY if the raw message contains an explicit question or request for explanation IN ADDITION to (or instead of) a fetch.
-  DO NOT set use_rag = true for a pure fetch request where the user only asked to get/find/download a paper with no follow-up question.
-- use_rag = true examples: "fetch and explain SHAP", "what is attention?", "how does RLHF work", "fetch LoRA and summarize it"
-- use_rag = false examples: "fetch the paper X", "get me papers on X", "download attention is all you need", "find papers on transformers"
+
+fetch flag:
+- fetch = true if AND ONLY IF one of these exact fetch verbs appears in the raw message:
+  fetch, download, find papers, search for papers, get the paper, pull papers.
+- If NONE of these words appear → fetch = false. No exceptions.
+- DO NOT infer fetching. DO NOT set fetch = true because a topic seems unfamiliar or a paper is missing from the project.
+  The user must explicitly ask to fetch. "Explain X" is NOT a fetch request even if X is not in the project.
+
+use_rag flag:
+- use_rag = true if the message contains a question or request for explanation/summary/analysis — regardless of whether fetch is true or false.
+- use_rag = false for pure fetch requests ("fetch the paper X" with no follow-up question).
+- use_rag = false for chitchat.
+- Examples where use_rag = true: "what is attention?", "explain SHAP", "how does RLHF work", "fetch LoRA and summarize it", "explain newsfeed"
+- Examples where use_rag = false: "fetch the paper X", "get me papers on X", "download attention is all you need", "Hi", "What model are you?"
 - Chitchat (use_rag = false, fetch = false):
     - Greetings/small talk: "Hi", "Hello", "How are you?", "What's up?", "Thanks"
     - Questions about the assistant itself: "What model are you?", "Who made you?", "What can you do?", "Are you GPT?"

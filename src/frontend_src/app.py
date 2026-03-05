@@ -27,6 +27,14 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "creating_project" not in st.session_state:
     st.session_state.creating_project = False
+if "project_papers" not in st.session_state:
+    st.session_state.project_papers = []
+if "upload_key" not in st.session_state:
+    st.session_state.upload_key = 0
+if "add_paper_pid" not in st.session_state:
+    st.session_state.add_paper_pid = None
+if "create_project_error" not in st.session_state:
+    st.session_state.create_project_error = ""
 
 
 # ---------------------------------------------------------------------------
@@ -73,14 +81,153 @@ def _switch_project(project_id: str):
         try:
             resp = requests.get(f"{BACKEND}/projects/{project_id}", timeout=5)
             resp.raise_for_status()
-            st.session_state.chat_history = resp.json().get("chat_display_history", [])
+            data = resp.json()
+            st.session_state.chat_history = data.get("chat_display_history", [])
+            st.session_state.project_papers = data.get("fetched_papers", [])
         except Exception:
             st.session_state.chat_history = []
+            st.session_state.project_papers = []
 
 
-# Load projects on first render
-if not st.session_state.projects:
-    _load_projects()
+def _refresh_project_papers(project_id: str):
+    """Fetch the latest paper list from the backend and update session state."""
+    try:
+        resp = requests.get(f"{BACKEND}/projects/{project_id}", timeout=5)
+        if resp.ok:
+            st.session_state.project_papers = resp.json().get("fetched_papers", [])
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Add Paper dialog
+# ---------------------------------------------------------------------------
+
+@st.dialog("Add Paper")
+def add_paper_dialog(project_id: str):
+    other_projects = [p for p in st.session_state.projects if p["project_id"] != project_id]
+    method = st.radio(
+        "Method", ["arXiv", "DOI", "Upload PDF", "Copy from Project"],
+        horizontal=True, label_visibility="collapsed",
+    )
+    st.divider()
+
+    if method == "arXiv":
+        with st.form("arxiv_form"):
+            arxiv_input = st.text_input("arXiv ID or URL", placeholder="1706.03762 or arxiv.org/abs/...")
+            submitted = st.form_submit_button("Add", type="primary", use_container_width=True)
+        if submitted:
+            if not arxiv_input.strip():
+                st.warning("Please enter an arXiv ID or URL.")
+            else:
+                with st.spinner("Fetching paper from arXiv…"):
+                    try:
+                        r = requests.post(
+                            f"{BACKEND}/projects/{project_id}/papers/arxiv",
+                            json={"arxiv_input": arxiv_input.strip()},
+                            timeout=120,
+                        )
+                        if r.ok:
+                            _refresh_project_papers(project_id)
+                            _load_projects()
+                            st.session_state.add_paper_pid = None
+                            st.rerun()
+                        else:
+                            st.error(r.json().get("detail", "Failed to fetch paper."))
+                    except Exception as e:
+                        st.error(str(e))
+
+    elif method == "DOI":
+        with st.form("doi_form"):
+            doi_input = st.text_input("DOI", placeholder="10.48550/arXiv.1706.03762")
+            submitted = st.form_submit_button("Add", type="primary", use_container_width=True)
+        if submitted:
+            if not doi_input.strip():
+                st.warning("Please enter a DOI.")
+            else:
+                with st.spinner("Resolving DOI…"):
+                    try:
+                        r = requests.post(
+                            f"{BACKEND}/projects/{project_id}/papers/doi",
+                            json={"doi": doi_input.strip()},
+                            timeout=120,
+                        )
+                        if r.ok:
+                            _refresh_project_papers(project_id)
+                            _load_projects()
+                            st.session_state.add_paper_pid = None
+                            st.rerun()
+                        else:
+                            st.error(r.json().get("detail", "Failed to resolve DOI."))
+                    except Exception as e:
+                        st.error(str(e))
+
+    elif method == "Upload PDF":
+        uploaded = st.file_uploader(
+            "PDF file", type=["pdf"],
+            key=f"dialog_upload_{st.session_state.upload_key}",
+        )
+        if st.button("Add", type="primary", use_container_width=True):
+            if not uploaded:
+                st.warning("Please select a PDF file first.")
+            else:
+                with st.spinner("Ingesting PDF…"):
+                    try:
+                        r = requests.post(
+                            f"{BACKEND}/projects/{project_id}/papers/upload",
+                            files={"file": (uploaded.name, uploaded.getvalue(), "application/pdf")},
+                            timeout=120,
+                        )
+                        if r.ok:
+                            st.session_state.upload_key += 1
+                            _refresh_project_papers(project_id)
+                            _load_projects()
+                            st.session_state.add_paper_pid = None
+                            st.rerun()
+                        else:
+                            st.error(r.json().get("detail", "Failed to ingest PDF."))
+                    except Exception as e:
+                        st.error(str(e))
+
+    elif method == "Copy from Project":
+        if not other_projects:
+            st.info("No other projects to copy from.")
+        else:
+            src_options = {p["name"]: p["project_id"] for p in other_projects}
+            src_name = st.selectbox("Source project", list(src_options.keys()))
+            src_pid = src_options[src_name]
+            try:
+                src_resp = requests.get(f"{BACKEND}/projects/{src_pid}", timeout=5)
+                src_papers = src_resp.json().get("fetched_papers", []) if src_resp.ok else []
+            except Exception:
+                src_papers = []
+            existing_titles = {p["title"] for p in st.session_state.project_papers}
+            copyable = [p for p in src_papers if p["title"] not in existing_titles]
+            if not copyable:
+                st.info("No new papers to copy from this project.")
+            else:
+                selected_title = st.selectbox("Paper", [p["title"] for p in copyable])
+                if st.button("Copy", type="primary", use_container_width=True):
+                    with st.spinner("Copying paper…"):
+                        try:
+                            r = requests.post(
+                                f"{BACKEND}/projects/{project_id}/papers/copy",
+                                json={"source_project_id": src_pid, "title": selected_title},
+                                timeout=30,
+                            )
+                            if r.ok:
+                                _refresh_project_papers(project_id)
+                                _load_projects()
+                                st.session_state.add_paper_pid = None
+                                st.rerun()
+                            else:
+                                st.error(r.json().get("detail", "Failed to copy paper."))
+                        except Exception as e:
+                            st.error(str(e))
+
+
+# Always refresh projects list on every render to stay in sync with the backend
+_load_projects()
 
 
 # ---------------------------------------------------------------------------
@@ -94,19 +241,29 @@ with st.sidebar:
         st.session_state.creating_project = True
 
     if st.session_state.creating_project:
-        with st.form("new_project_form", clear_on_submit=True):
+        with st.form("new_project_form", clear_on_submit=False):
             new_name = st.text_input("Project name", placeholder="e.g. Transformer Study")
             new_desc = st.text_area("Description (optional)", height=60)
             col1, col2 = st.columns(2)
             submitted = col1.form_submit_button("Create")
             cancelled = col2.form_submit_button("Cancel")
+        if st.session_state.create_project_error:
+            st.error(st.session_state.create_project_error)
         if submitted and new_name.strip():
-            pid = _create_project(new_name.strip(), new_desc.strip())
-            if pid:
-                _switch_project(pid)
-            st.session_state.creating_project = False
-            st.rerun()
+            name = new_name.strip()
+            existing_names = {p["name"].lower() for p in st.session_state.projects}
+            if name.lower() in existing_names:
+                st.session_state.create_project_error = f"A project named '{name}' already exists."
+                st.rerun()
+            else:
+                st.session_state.create_project_error = ""
+                pid = _create_project(name, new_desc.strip())
+                if pid:
+                    _switch_project(pid)
+                st.session_state.creating_project = False
+                st.rerun()
         if cancelled:
+            st.session_state.create_project_error = ""
             st.session_state.creating_project = False
             st.rerun()
 
@@ -130,12 +287,7 @@ with st.sidebar:
 
             # Paper list
             if is_active:
-                # Get current paper list from last assistant message (most up to date)
-                current_papers = []
-                for msg in reversed(st.session_state.chat_history):
-                    if msg.get("role") == "assistant" and "fetched_papers" in msg:
-                        current_papers = msg["fetched_papers"]
-                        break
+                current_papers = st.session_state.project_papers
 
                 with st.expander(f"Papers ({len(current_papers)})", expanded=is_active):
                     for paper in current_papers:
@@ -149,122 +301,15 @@ with st.sidebar:
                                     json={"title": title},
                                     timeout=10,
                                 )
-                                # Update local chat history to reflect removal
-                                proj_resp = requests.get(f"{BACKEND}/projects/{pid}", timeout=5)
-                                if proj_resp.ok:
-                                    updated = proj_resp.json()
-                                    # Patch fetched_papers in all assistant messages in chat history
-                                    for m in st.session_state.chat_history:
-                                        if m.get("role") == "assistant":
-                                            m["fetched_papers"] = updated.get("fetched_papers", [])
+                                _refresh_project_papers(pid)
                             except Exception as e:
                                 st.error(f"Delete failed: {e}")
                             st.rerun()
 
-                    # Add paper section
-                    st.markdown("**Add Paper**")
-                    add_tab = st.radio("Method", ["arXiv", "DOI", "Upload PDF", "Copy from Project"],
-                                       key=f"add_method_{pid}", horizontal=True, label_visibility="collapsed")
-
-                    if add_tab == "arXiv":
-                        arxiv_input = st.text_input("arXiv ID or URL", key=f"arxiv_{pid}",
-                                                    placeholder="1706.03762 or arxiv.org/abs/...")
-                        if st.button("Add", key=f"arxiv_add_{pid}") and arxiv_input.strip():
-                            with st.spinner("Fetching from arXiv..."):
-                                try:
-                                    r = requests.post(
-                                        f"{BACKEND}/projects/{pid}/papers/arxiv",
-                                        json={"arxiv_input": arxiv_input.strip()},
-                                        timeout=120,
-                                    )
-                                    if r.ok:
-                                        st.success(f"Added: {r.json().get('title', '')}")
-                                        _load_projects()
-                                    else:
-                                        st.error(r.json().get("detail", "Failed"))
-                                except Exception as e:
-                                    st.error(str(e))
-                            st.rerun()
-
-                    elif add_tab == "DOI":
-                        doi_input = st.text_input("DOI", key=f"doi_{pid}",
-                                                  placeholder="10.48550/arXiv.1706.03762")
-                        if st.button("Add", key=f"doi_add_{pid}") and doi_input.strip():
-                            with st.spinner("Resolving DOI..."):
-                                try:
-                                    r = requests.post(
-                                        f"{BACKEND}/projects/{pid}/papers/doi",
-                                        json={"doi": doi_input.strip()},
-                                        timeout=120,
-                                    )
-                                    if r.ok:
-                                        st.success(f"Added: {r.json().get('title', '')}")
-                                        _load_projects()
-                                    else:
-                                        st.error(r.json().get("detail", "Failed"))
-                                except Exception as e:
-                                    st.error(str(e))
-                            st.rerun()
-
-                    elif add_tab == "Upload PDF":
-                        uploaded = st.file_uploader("PDF file", type=["pdf"], key=f"upload_{pid}")
-                        if uploaded and st.button("Add", key=f"upload_add_{pid}"):
-                            with st.spinner("Ingesting PDF..."):
-                                try:
-                                    r = requests.post(
-                                        f"{BACKEND}/projects/{pid}/papers/upload",
-                                        files={"file": (uploaded.name, uploaded.getvalue(), "application/pdf")},
-                                        timeout=120,
-                                    )
-                                    if r.ok:
-                                        st.success(f"Added: {r.json().get('title', '')}")
-                                        _load_projects()
-                                    else:
-                                        st.error(r.json().get("detail", "Failed"))
-                                except Exception as e:
-                                    st.error(str(e))
-                            st.rerun()
-
-                    elif add_tab == "Copy from Project":
-                        other_projects = [p for p in st.session_state.projects if p["project_id"] != pid]
-                        if not other_projects:
-                            st.caption("No other projects to copy from.")
-                        else:
-                            src_options = {p["name"]: p["project_id"] for p in other_projects}
-                            src_name = st.selectbox("Source project", list(src_options.keys()),
-                                                    key=f"copy_src_{pid}")
-                            src_pid = src_options[src_name]
-                            # Load papers available in source project
-                            try:
-                                src_resp = requests.get(f"{BACKEND}/projects/{src_pid}", timeout=5)
-                                src_papers = src_resp.json().get("fetched_papers", []) if src_resp.ok else []
-                            except Exception:
-                                src_papers = []
-                            # Filter out papers already in this project
-                            existing_titles = {p["title"] for p in current_papers}
-                            copyable = [p for p in src_papers if p["title"] not in existing_titles]
-                            if not copyable:
-                                st.caption("No new papers to copy from that project.")
-                            else:
-                                paper_titles = [p["title"] for p in copyable]
-                                selected_title = st.selectbox("Paper to copy", paper_titles,
-                                                              key=f"copy_paper_{pid}")
-                                if st.button("Copy", key=f"copy_add_{pid}"):
-                                    with st.spinner("Copying paper..."):
-                                        try:
-                                            r = requests.post(
-                                                f"{BACKEND}/projects/{pid}/papers/copy",
-                                                json={"source_project_id": src_pid, "title": selected_title},
-                                                timeout=30,
-                                            )
-                                            if r.ok:
-                                                st.success(f"Copied: {selected_title}")
-                                                _load_projects()
-                                            else:
-                                                st.error(r.json().get("detail", "Failed"))
-                                        except Exception as e:
-                                            st.error(str(e))
-                                    st.rerun()
+                    st.divider()
+                    if st.button("＋ Add Paper", key=f"open_add_{pid}", use_container_width=True):
+                        st.session_state.add_paper_pid = pid
+                        st.rerun()
             else:
                 paper_count = project.get("paper_count", 0)
                 if paper_count:
@@ -272,6 +317,13 @@ with st.sidebar:
 
             st.divider()
 
+
+# ---------------------------------------------------------------------------
+# Dialog trigger (must be outside the sidebar context)
+# ---------------------------------------------------------------------------
+
+if st.session_state.add_paper_pid:
+    add_paper_dialog(st.session_state.add_paper_pid)
 
 # ---------------------------------------------------------------------------
 # Main chat area
@@ -321,6 +373,8 @@ else:
             rationale = rj.get("rationale")
             sources = rj.get("sources", [])
             fetched_papers = rj.get("fetched_papers", [])
+            if fetched_papers:
+                st.session_state.project_papers = fetched_papers
         except Exception as e:
             assistant_response = f"Error: {e}"
             tool_used = None

@@ -66,7 +66,7 @@ def get_answer(user_query: str, project_id: str = "default") -> dict:
         chat_summary=chat_summary,
         fetch=fetch_occurred,
         papers=papers_list,
-        project_papers=current_project_papers or None,
+        project_papers=current_project_papers,
     )
     rag_occurred = intent.use_rag
 

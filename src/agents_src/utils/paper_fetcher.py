@@ -226,6 +226,21 @@ def _search_arxiv_broad(query_text: str, category: str = "", max_results: int = 
 # Vector store ingestion
 # ---------------------------------------------------------------------------
 
+def is_paper_ingested(paper_title: str) -> bool:
+    """Return True if the global ChromaDB already has chunks for this paper title."""
+    try:
+        db = chromadb.PersistentClient(path=settings.VECTOR_STORE_DIR)
+        collection = db.get_or_create_collection(name=settings.COLLECTION_NAME)
+        result = collection.get(
+            where={"paper_title": {"$eq": paper_title}},
+            limit=1,
+            include=[],
+        )
+        return len(result["ids"]) > 0
+    except Exception:
+        return False
+
+
 def build_vector_store_from_documents(
     pdf_paths: Optional[List[str]] = None,
     paper_titles: Optional[List[str]] = None,
@@ -242,6 +257,7 @@ def build_vector_store_from_documents(
 
     Chunks are global (no project_id tag). Projects track which papers they own
     via their fetched_papers list; RAG filters by paper_title at query time.
+    Papers already present in the store are skipped to prevent duplicate chunks.
     """
     logger.info("Starting vector store ingestion process.")
     try:
@@ -261,6 +277,9 @@ def build_vector_store_from_documents(
                     logger.warning(f"No text extracted from: {p}")
                     continue
                 title = (paper_titles[i] if paper_titles and i < len(paper_titles) else os.path.basename(p))
+                if is_paper_ingested(title):
+                    logger.info(f"Skipping '{title}' — already in global vector store.")
+                    continue
                 metadata = {
                     "source": p,
                     "filename": os.path.basename(p),
@@ -474,27 +493,34 @@ def fetch_papers_and_ingest(
 
     # ------------------------------------------------------------------
     # Phase 5: Download PDFs and ingest
+    # Papers already in the global store are registered without re-downloading.
     # ------------------------------------------------------------------
     docs_dir = settings.DOCUMENTS_DIR
     Path(docs_dir).mkdir(parents=True, exist_ok=True)
 
     pdf_paths = []
-    paper_titles = []
+    paper_titles_to_ingest = []
     response = []
 
     for cand in selected:
+        if is_paper_ingested(cand["title"]):
+            logger.info(f"Paper already in global store, skipping download: '{cand['title']}'")
+            response.append({"title": cand["title"], "url": cand["pdf_url"]})
+            continue
         pdf_path = _download_pdf(cand, docs_dir)
         if pdf_path:
             pdf_paths.append(pdf_path)
-            paper_titles.append(cand["title"])
+            paper_titles_to_ingest.append(cand["title"])
             response.append({"title": cand["title"], "url": cand["pdf_url"]})
 
-    if not pdf_paths:
+    if not response:
         logger.error("All PDF downloads failed.")
         return None
 
-    build_vector_store_from_documents(pdf_paths=pdf_paths, paper_titles=paper_titles)
-    logger.info(f"Ingested papers: {[r['title'] for r in response]}")
+    if pdf_paths:
+        build_vector_store_from_documents(pdf_paths=pdf_paths, paper_titles=paper_titles_to_ingest)
+
+    logger.info(f"Fetched papers: {[r['title'] for r in response]}")
     return response
 
 
